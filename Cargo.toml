@@ -1,0 +1,39 @@
+[package]
+name = "sessionizer"
+version = "0.1.0"
+edition = "2021"
+repository = "https://github.com/knutwalker/sessionizer"
+authors = ["Paul Horn <developer@knutwalker.de>"]
+description = "Tmux session manager"
+license = "MIT OR Apache-2.0"
+publish = false
+readme = "README.md"
+categories = ["cli"]
+keywords = ["tmux", "session", "sessionizer"]
+
+[dependencies]
+crossterm = "0.27.0"
+home = "0.5.9"
+ignore = "0.4.21"
+kommandozeile = { git = "https://github.com/knutwalker/kommandozeile", version = "0.1.0", features = ["clap_app_color", "clap_color", "clap_derive", "clap_verbose", "color-eyre", "setup_clap", "setup_color-eyre", "setup_tracing"], default-features = false }
+nucleo = "0.3.0"
+panic-message = "0.3.0"
+shlex = "1.2.0"
+
+[build-dependencies]
+vergen = { version = "8.2.6", features = ["build", "cargo", "git", "rustc", "gitcl"] }
+
+[profile.release]
+codegen-units = 1
+debug = false
+debug-assertions = false
+lto = true
+opt-level = 3
+overflow-checks = true
+rpath = false
+strip = true
+
+[package.metadata.release]
+pre-release-commit-message = "Release {{crate_name}} {{version}}"
+sign-commit = true
+sign-tag = true
