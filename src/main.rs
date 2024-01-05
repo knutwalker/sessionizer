@@ -32,39 +32,21 @@
 use std::{
     cmp::Reverse,
     fmt::Display,
-    io::{StderrLock, Write},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::Command,
-    sync::{
-        mpsc::{self, SyncSender},
-        Arc,
-    },
+    sync::mpsc::{self, SyncSender},
     thread,
 };
 
-use crossterm::{
-    cursor,
-    event::{Event, KeyCode, KeyModifiers},
-    style::{self, ContentStyle, StyledContent, Stylize},
-    terminal::{self, ClearType},
-    QueueableCommand,
-};
+use fuzzy_select::{FuzzySelect, Select};
 use ignore::WalkBuilder;
 use kommandozeile::{
     clap,
-    color_eyre::{
-        eyre::{eyre, OptionExt, Report},
-        Section,
-    },
+    color_eyre::eyre::{eyre, OptionExt},
     concolor, pkg_name, setup_clap, setup_color_eyre_builder,
     tracing::{debug, info, warn},
     verbosity_filter, Color, Global, Result, Verbose,
-};
-use nucleo::{
-    chars::graphemes,
-    pattern::{CaseMatching, Normalization},
-    Config, Matcher, Nucleo, Snapshot,
 };
 use panic_message::panic_message;
 
@@ -164,24 +146,6 @@ impl Entry {
         }
     }
 
-    fn project_root(&self) -> Option<impl Display + '_> {
-        if let Self::Project(p) = self {
-            std::iter::successors(Some(p.root.as_path()), |p| p.parent())
-                .nth(p.depth)
-                .map(|p| p.display())
-        } else {
-            None
-        }
-    }
-
-    fn session_info(&self) -> Option<String> {
-        if let Self::Session(tmux) = self {
-            Some(format!(" (root: {} {})", tmux.root.display(), tmux.info))
-        } else {
-            None
-        }
-    }
-
     fn cmd(&self) -> Command {
         let mut cmd = Command::new("tmux");
 
@@ -239,6 +203,20 @@ struct Project {
     name: String,
     search_path: String,
     depth: usize,
+}
+
+impl Display for TmuxSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, " (root: {} {})", self.root.display(), self.info)
+    }
+}
+
+impl Display for Project {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::iter::successors(Some(self.root.as_path()), |p| p.parent())
+            .nth(self.depth)
+            .map_or(Ok(()), |p| write!(f, "{}/", p.display()))
+    }
 }
 
 fn spawn_collector() -> (SyncSender<Entry>, Thread<Vec<Entry>>) {
@@ -412,7 +390,34 @@ fn find_projects(home: &Path, tx: &SyncSender<Entry>) {
 }
 
 fn make_selection(entries: Vec<Entry>, color: bool) -> Result<Option<Command>> {
-    Prompt::new().make_selection(entries, color)
+    Ok(FuzzySelect::new()
+        .with_prompt("Select a session or project: >")
+        .set_color(color)
+        .with_options(entries)
+        .select_opt()?
+        .map(|entry| entry.cmd()))
+}
+
+impl Select for Entry {
+    fn search_content(&self) -> &str {
+        self.search_content()
+    }
+
+    fn render_before_content(&self) -> Option<impl Display + '_> {
+        if let Self::Project(ref project) = self {
+            Some(project)
+        } else {
+            None
+        }
+    }
+
+    fn render_after_content(&self) -> Option<impl Display + '_> {
+        if let Self::Session(ref tmux) = self {
+            Some(tmux)
+        } else {
+            None
+        }
+    }
 }
 
 struct Thread<T> {
@@ -429,431 +434,6 @@ impl<T> Thread<T> {
         self.thread
             .join()
             .map_err(|e| eyre!("{} panicked: {}", self.name, panic_message(&e)))
-    }
-}
-
-struct Prompt {
-    query: String,
-    cursor_pos: usize,
-    scroll_offset: u32,
-    selected: u32,
-    height: u32,
-    active: bool,
-    appending: bool,
-    number_of_matches: u32,
-    indices: Vec<u32>,
-    content: String,
-}
-
-impl Prompt {
-    fn new() -> Self {
-        Self {
-            query: String::new(),
-            cursor_pos: 0,
-            scroll_offset: 0,
-            selected: 0,
-            height: u32::from(terminal::size().map_or(10, |(_, h)| h.saturating_sub(1))),
-            active: true,
-            appending: true,
-            number_of_matches: u32::MAX,
-            indices: Vec::new(),
-            content: String::new(),
-        }
-    }
-
-    fn make_selection(mut self, entries: Vec<Entry>, color: bool) -> Result<Option<Command>> {
-        let mut term = Terminal::new(color)?;
-
-        let theme = Theme::default();
-        let mut nucleo = Self::prepare_matcher(entries);
-        let mut matcher = Matcher::new(Config::DEFAULT);
-
-        term.queue(cursor::MoveTo(0, 0))
-            .queue(terminal::Clear(ClearType::All))
-            .queue(style::Print("Select a session or project: > "))
-            .queue_(cursor::SavePosition);
-
-        let key = loop {
-            let res = self.tick(&theme, &mut term, &mut nucleo, &mut matcher)?;
-
-            match res {
-                Some(Stop::Quit) => {
-                    return Ok(None);
-                }
-                Some(Stop::Selected(selected)) => {
-                    break selected;
-                }
-                None => {}
-            }
-        };
-
-        drop(term);
-
-        let cmd = nucleo
-            .snapshot()
-            .get_matched_item(key)
-            .map(|item| item.data.cmd());
-
-        Ok(cmd)
-    }
-
-    fn prepare_matcher(entries: Vec<Entry>) -> Nucleo<Entry> {
-        let nucleo = Nucleo::new(Config::DEFAULT, Arc::new(|| {}), None, 1);
-
-        let injector = nucleo.injector();
-
-        for entry in entries {
-            let column = entry.search_content().to_owned();
-            let _ = injector.push(entry, move |cols| {
-                cols[0] = column.into();
-            });
-        }
-
-        nucleo
-    }
-
-    fn tick(
-        &mut self,
-        theme: &Theme,
-        term: &mut Terminal,
-        nucleo: &mut Nucleo<Entry>,
-        matcher: &mut Matcher,
-    ) -> Result<Option<Stop>> {
-        if self.active {
-            let status = nucleo.tick(10);
-            if status.changed {
-                self.scroll_offset = 0;
-                self.selected = 0;
-            }
-
-            let snap = nucleo.snapshot();
-            self.render_items(theme, term, matcher, snap)?;
-        }
-
-        let key = crossterm::event::read()?;
-        let handled = self.handle_event(&key);
-
-        let query_changed = match handled {
-            Handled::Unchanged => false,
-            Handled::Changed => true,
-            Handled::Stop(stop) => return Ok(Some(stop)),
-        };
-
-        if query_changed {
-            nucleo.pattern.reparse(
-                0,
-                &self.query,
-                CaseMatching::Smart,
-                Normalization::Smart,
-                self.appending,
-            );
-        }
-
-        Ok(None)
-    }
-
-    fn render_items(
-        &mut self,
-        theme: &Theme,
-        term: &mut Terminal,
-        matcher: &mut Matcher,
-        snap: &Snapshot<Entry>,
-    ) -> Result<()> {
-        self.number_of_matches = snap.matched_item_count();
-
-        let end = self
-            .scroll_offset
-            .saturating_add(self.height)
-            .min(snap.matched_item_count());
-        let start = self.scroll_offset.min(end.saturating_sub(1));
-
-        let matched_items = snap.matched_items(start..end).enumerate();
-
-        for (idx, item) in matched_items {
-            #[allow(clippy::cast_possible_truncation)]
-            let idx = idx as u32 + start;
-            let entry = item.data;
-
-            let (indicator, text, hl) = if idx == self.selected {
-                (
-                    theme.selected_indicator,
-                    &theme.selected_text,
-                    &theme.selected_highlight,
-                )
-            } else {
-                (theme.indicator, &theme.text, &theme.highlight)
-            };
-
-            term.queue(cursor::MoveToNextLine(1))
-                .queue(terminal::Clear(ClearType::CurrentLine))
-                .queue(style::PrintStyledContent(indicator))
-                .queue_(style::PrintStyledContent(text.apply(" ")));
-
-            if let Some(root) = entry.project_root() {
-                term.queue(style::PrintStyledContent(text.apply(root)))
-                    .queue_(style::PrintStyledContent(text.apply("/")));
-            }
-
-            let _score = snap.pattern().column_pattern(0).indices(
-                item.matcher_columns[0].slice(..),
-                matcher,
-                &mut self.indices,
-            );
-            self.indices.sort_unstable();
-            self.indices.dedup();
-
-            let mut indices = self.indices.drain(..).map(|i| i as usize);
-            let mut match_idx = indices.next().unwrap_or(usize::MAX);
-
-            for (grapheme_idx, grapheme) in graphemes(entry.search_content()).enumerate() {
-                if grapheme_idx == match_idx {
-                    if !self.content.is_empty() {
-                        term.queue_(style::PrintStyledContent(text.apply(self.content.as_str())));
-                        self.content.clear();
-                    }
-
-                    term.queue_(style::PrintStyledContent(hl.apply(grapheme)));
-                    match_idx = indices.next().unwrap_or(usize::MAX);
-                } else {
-                    self.content.push(grapheme);
-                }
-            }
-
-            if !self.content.is_empty() {
-                term.queue_(style::PrintStyledContent(text.apply(self.content.as_str())));
-                self.content.clear();
-            }
-
-            if let Some(info) = entry.session_info() {
-                term.queue_(style::Print(info));
-            }
-        }
-
-        #[allow(clippy::cast_possible_truncation)]
-        let cursor_offset = self
-            .query
-            .len()
-            .saturating_sub(self.cursor_pos)
-            .min(usize::from(u16::MAX)) as u16;
-
-        term.queue(terminal::Clear(ClearType::FromCursorDown))
-            .queue(cursor::RestorePosition)
-            .queue(terminal::Clear(ClearType::UntilNewLine))
-            .queue_(style::PrintStyledContent(self.query.as_str().bold()));
-
-        if cursor_offset > 0 {
-            term.queue_(cursor::MoveLeft(cursor_offset));
-        }
-
-        term.flush()?;
-
-        Ok(())
-    }
-
-    fn handle_event(&mut self, event: &Event) -> Handled {
-        match event {
-            Event::Key(key) => return self.handle_key_event(key.code, key.modifiers),
-            Event::FocusLost => self.active = false,
-            Event::FocusGained => self.active = true,
-            Event::Resize(_, h) => self.height = u32::from(h.saturating_sub(1)),
-            Event::Mouse(_) | Event::Paste(_) => {}
-        };
-
-        Handled::Unchanged
-    }
-
-    fn handle_key_event(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Handled {
-        match (code, modifiers) {
-            (KeyCode::Esc, _) => {
-                if self.query.is_empty() {
-                    Handled::Stop(Stop::Quit)
-                } else {
-                    self.query.clear();
-                    self.cursor_pos = 0;
-                    self.appending = false;
-                    Handled::Changed
-                }
-            }
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => Handled::Stop(Stop::Quit),
-            (KeyCode::Enter | KeyCode::Char('\n' | '\r'), _) => {
-                Handled::Stop(Stop::Selected(self.selected))
-            }
-            (KeyCode::Backspace, _) => match self.cursor_pos.checked_sub(1) {
-                Some(pos) => {
-                    let _ = self.query.remove(pos);
-                    self.cursor_pos = pos;
-                    self.appending = false;
-                    Handled::Changed
-                }
-                _ => Handled::Unchanged,
-            },
-            (KeyCode::Delete, _) => {
-                if self.cursor_pos < self.query.len() {
-                    let _ = self.query.remove(self.cursor_pos);
-                    self.appending = false;
-                    Handled::Changed
-                } else {
-                    Handled::Unchanged
-                }
-            }
-            (KeyCode::Home, _) => {
-                self.cursor_pos = 0;
-                self.appending = self.query.is_empty();
-                Handled::Unchanged
-            }
-            (KeyCode::End, _) => {
-                self.cursor_pos = self.query.len();
-                self.appending = true;
-                Handled::Unchanged
-            }
-            (KeyCode::Left, m) => {
-                self.move_on_line(isize::from(m.contains(KeyModifiers::SHIFT)) * -9 - 1)
-            }
-            (KeyCode::Right, m) => {
-                self.move_on_line(isize::from(m.contains(KeyModifiers::SHIFT)) * 9 + 1)
-            }
-            (KeyCode::Up, m) => {
-                self.move_selection(i32::from(m.contains(KeyModifiers::SHIFT)) * -9 - 1)
-            }
-            (KeyCode::Down, m) => {
-                self.move_selection(i32::from(m.contains(KeyModifiers::SHIFT)) * 9 + 1)
-            }
-            (KeyCode::PageUp, _) => {
-                self.scroll_offset = self.scroll_offset.saturating_sub(self.height);
-                Handled::Unchanged
-            }
-            (KeyCode::PageDown, _) => {
-                self.scroll_offset = self.scroll_offset.saturating_add(self.height);
-                Handled::Unchanged
-            }
-            (KeyCode::Char(c), _) => {
-                if self.cursor_pos == self.query.len() {
-                    self.appending = true;
-                    self.query.push(c);
-                } else {
-                    self.query.insert(self.cursor_pos, c);
-                }
-                self.cursor_pos += 1;
-                Handled::Changed
-            }
-            _ => Handled::Unchanged,
-        }
-    }
-
-    fn move_on_line(&mut self, diff: isize) -> Handled {
-        self.cursor_pos = self
-            .cursor_pos
-            .saturating_add_signed(diff)
-            .min(self.query.len());
-        self.appending = self.cursor_pos == self.query.len();
-        Handled::Unchanged
-    }
-
-    fn move_selection(&mut self, diff: i32) -> Handled {
-        self.selected = self
-            .selected
-            .saturating_add_signed(diff)
-            .min(self.number_of_matches.saturating_sub(1));
-
-        if self.selected < self.scroll_offset {
-            self.scroll_offset = self.selected;
-        }
-
-        if self.selected >= self.scroll_offset.saturating_add(self.height) {
-            self.scroll_offset = self.selected.saturating_sub(self.height).saturating_add(1);
-        }
-
-        Handled::Unchanged
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Handled {
-    Unchanged,
-    Changed,
-    Stop(Stop),
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Stop {
-    Quit,
-    Selected(u32),
-}
-
-struct Terminal {
-    io: StderrLock<'static>,
-    err: Option<Report>,
-}
-
-impl Terminal {
-    fn new(color: bool) -> Result<Self> {
-        terminal::enable_raw_mode().map_err(|e| match e.raw_os_error() {
-            Some(25 | 6) => eyre!("Cannot run sessionizer in non-interactive mode (not a tty)"),
-            _ => eyre!("failed to enable raw mode: {}", e),
-        })?;
-
-        style::force_color_output(color);
-
-        let mut io = std::io::stderr().lock();
-        let _ = io.queue(terminal::EnterAlternateScreen)?;
-
-        Ok(Self { io, err: None })
-    }
-
-    fn queue(&mut self, cmd: impl crossterm::Command) -> &mut Self {
-        if let Err(e) = self.io.queue(cmd) {
-            let ee = match self.err.take() {
-                Some(err) => err.with_error(move || e),
-                None => eyre!("failed to queue command: {}", e),
-            };
-            self.err = Some(ee);
-        };
-        self
-    }
-
-    fn queue_(&mut self, cmd: impl crossterm::Command) {
-        let _ = self.queue(cmd);
-    }
-
-    fn flush(&mut self) -> Result<()> {
-        if let Some(e) = self.err.take() {
-            return Err(e);
-        }
-
-        self.io
-            .flush()
-            .map_err(|e| eyre!("failed to flush terminal: {}", e))?;
-
-        Ok(())
-    }
-}
-
-impl Drop for Terminal {
-    fn drop(&mut self) {
-        let _ = self.queue(terminal::LeaveAlternateScreen).flush();
-        let _ = terminal::disable_raw_mode();
-    }
-}
-
-struct Theme {
-    selected_indicator: StyledContent<&'static str>,
-    indicator: StyledContent<&'static str>,
-    selected_text: ContentStyle,
-    text: ContentStyle,
-    selected_highlight: ContentStyle,
-    highlight: ContentStyle,
-}
-
-impl Default for Theme {
-    fn default() -> Self {
-        Self {
-            selected_indicator: ContentStyle::new().red().on_black().apply(">"),
-            indicator: ContentStyle::new().on_black().apply(" "),
-            selected_text: ContentStyle::new().on_black(),
-            text: ContentStyle::new(),
-            selected_highlight: ContentStyle::new().dark_cyan().on_black(),
-            highlight: ContentStyle::new().cyan(),
-        }
     }
 }
 

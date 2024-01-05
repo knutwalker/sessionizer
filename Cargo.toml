@@ -12,11 +12,10 @@ categories = ["cli"]
 keywords = ["tmux", "session", "sessionizer"]
 
 [dependencies]
-crossterm = "0.27.0"
 home = "0.5.9"
 ignore = "0.4.21"
 kommandozeile = { git = "https://github.com/knutwalker/kommandozeile", version = "0.1.0", features = ["clap_app_color", "clap_color", "clap_derive", "clap_verbose", "color-eyre", "setup_clap", "setup_color-eyre", "setup_tracing"], default-features = false }
-nucleo = "0.3.0"
+fuzzy-select = "0.1"
 panic-message = "0.3.0"
 shlex = "1.2.0"
 
