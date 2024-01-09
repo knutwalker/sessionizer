@@ -74,7 +74,7 @@ fn main() -> Result<()> {
 
     debug!("found {} entries", entries.len());
 
-    let Some(mut cmd) = make_selection(entries, color)? else {
+    let Some(mut cmd) = make_selection(entries, args.query, args.use_color)? else {
         return Ok(());
     };
 
@@ -365,9 +365,14 @@ fn find_projects(home: &Path, tx: &SyncSender<Entry>) {
     });
 }
 
-fn make_selection(entries: Vec<Entry>, color: bool) -> Result<Option<Command>> {
+fn make_selection(
+    entries: Vec<Entry>,
+    query: Option<String>,
+    color: bool,
+) -> Result<Option<Command>> {
     Ok(FuzzySelect::new()
         .with_prompt("Select a session or project: >")
+        .set_query::<String>(query)
         .set_color(color)
         .with_options(entries)
         .select_opt()?
@@ -434,6 +439,9 @@ struct Args {
 
     #[clap(flatten)]
     selection: SelectionArgs,
+
+    #[clap()]
+    query: Option<String>,
 
     #[clap(skip)]
     use_color: bool,
