@@ -35,7 +35,10 @@ use std::{
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::Command,
-    sync::mpsc::{self, SyncSender},
+    sync::{
+        mpsc::{self, SyncSender},
+        OnceLock,
+    },
     thread,
 };
 
@@ -51,36 +54,9 @@ use kommandozeile::{
 use panic_message::panic_message;
 
 fn main() -> Result<()> {
-    let args = setup_clap::<Args>()
-        .color_from(|a| a.color)
-        .verbose_from(pkg_name!(), |a| a.verbose)
-        .run();
-
-    setup_color_eyre_builder()
-        .issue_url(concat!(env!("CARGO_PKG_REPOSITORY"), "/issues/new"))
-        .add_issue_metadata("version", env!("CARGO_PKG_VERSION"))
-        .install()?;
-
-    if args.version {
-        let info = Info::default();
-        println!("{} {}", env!("CARGO_PKG_NAME"), info.build_version);
-        if args.verbose.verbosity() >= kommandozeile::Verbosity::Info {
-            println!("{info}");
-        }
-
-        return Ok(());
-    }
+    let args = Args::init()?;
 
     let home = home::home_dir().ok_or_eyre("failed to get user home directory")?;
-
-    let color = concolor::get(concolor::Stream::Stdout).color();
-    let filter = verbosity_filter!(args.verbose.verbosity());
-
-    debug!(
-        ?args,
-        color = color,
-        filter =% filter,
-    );
 
     let (tx, entries) = spawn_collector();
 
@@ -439,24 +415,52 @@ impl<T> Thread<T> {
 
 /// Select a new tmux session from a list of running sessions or a selection of projects.
 #[derive(Debug, clap::Parser)]
-#[command(infer_long_args(true))]
+#[command(
+    version(short_version()),
+    long_version(long_version()),
+    disable_help_subcommand(true),
+    infer_long_args(true)
+)]
 struct Args {
-    #[clap(flatten)]
-    selection: SelectionArgs,
-
-    /// Don't switch, just print the final tmux command.
-    #[clap(long, short = 'n')]
-    dry_run: bool,
-
     #[clap(flatten)]
     verbose: Verbose<Global>,
 
     #[clap(flatten)]
     color: Color,
 
-    /// Print version
-    #[arg(short = 'V', long)]
-    version: bool,
+    /// Don't switch, just print the final tmux command.
+    #[clap(long, short = 'n')]
+    dry_run: bool,
+
+    #[clap(flatten)]
+    selection: SelectionArgs,
+
+    #[clap(skip)]
+    use_color: bool,
+}
+
+impl Args {
+    pub fn init() -> Result<Self> {
+        let mut args = setup_clap::<Self>()
+            .color_from(|a| a.color)
+            .verbose_from(pkg_name!(), |a| a.verbose)
+            .run();
+
+        setup_color_eyre_builder()
+            .issue_url(concat!(env!("CARGO_PKG_REPOSITORY"), "/issues/new"))
+            .add_issue_metadata("version", env!("CARGO_PKG_VERSION"))
+            .install()?;
+
+        args.use_color = concolor::get(concolor::Stream::Stdout).color();
+
+        debug!(
+            ?args,
+            color = args.use_color,
+            filter =% verbosity_filter!(args.verbose.verbosity()),
+        );
+
+        Ok(args)
+    }
 }
 
 #[derive(Debug, clap::Args)]
@@ -469,6 +473,18 @@ struct SelectionArgs {
     /// Only include project directories.
     #[clap(long, short = 'p')]
     projects_only: bool,
+}
+
+const fn short_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+fn long_version() -> &'static str {
+    static LONG_VERSION: OnceLock<String> = OnceLock::new();
+    LONG_VERSION.get_or_init(|| {
+        let info = Info::new();
+        format!("\n{info}")
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -499,8 +515,8 @@ impl Display for Info {
     }
 }
 
-impl Default for Info {
-    fn default() -> Self {
+impl Info {
+    const fn new() -> Self {
         Self {
             build_version: env!("CARGO_PKG_VERSION"),
             build_timestamp: env!("VERGEN_BUILD_TIMESTAMP"),
