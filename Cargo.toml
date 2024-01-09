@@ -14,13 +14,32 @@ keywords = ["tmux", "session", "sessionizer"]
 [dependencies]
 home = "0.5.9"
 ignore = "0.4.21"
-kommandozeile = { git = "https://github.com/knutwalker/kommandozeile", version = "0.1.0", features = ["clap_app_color", "clap_color", "clap_derive", "clap_verbose", "color-eyre", "setup_clap", "setup_color-eyre", "setup_tracing"], default-features = false }
 fuzzy-select = "0.1"
 panic-message = "0.3.0"
 shlex = "1.2.0"
 
+[dependencies.kommandozeile]
+version = "0.1.0"
+default-features = false
+features = [
+  "clap_app_color",
+  "clap_color",
+  "clap_derive",
+  "clap_verbose",
+  "color-eyre",
+  "setup_clap",
+  "setup_color-eyre",
+  "setup_tracing",
+]
+
 [build-dependencies]
-vergen = { version = "8.2.6", features = ["build", "cargo", "git", "rustc", "gitcl"] }
+vergen = { version = "8.2.6", features = [
+  "build",
+  "cargo",
+  "git",
+  "rustc",
+  "gitcl",
+] }
 
 [profile.release]
 codegen-units = 1
