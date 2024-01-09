@@ -1,0 +1,54 @@
+name: checks
+
+on:
+  push:
+    branches:
+      - main
+  merge_group:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  RUST_LOG: debug
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update --component clippy
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Setup Rust Problem Matchers
+        uses: r7kamura/rust-problem-matchers@v1
+      - name: Run cargo check
+        run: cargo +stable check --all-targets
+      - name: Run clippy
+        run: cargo +stable clippy --all-targets --all-features -- -D warnings
+      - name: Run cargo fmt
+        run: cargo +stable fmt --all -- --check
+
+  unit-tests:
+    name: Run unit tests
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [stable, beta]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Rust
+        run: rustup toolchain install ${{ matrix.rust }} --profile minimal --no-self-update
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Setup Rust Problem Matchers
+        uses: r7kamura/rust-problem-matchers@v1
+      - name: Run unit tests
+        run: cargo +${{ matrix.rust }} test

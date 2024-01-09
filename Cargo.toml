@@ -6,7 +6,7 @@ repository = "https://github.com/knutwalker/sessionizer"
 authors = ["Paul Horn <developer@knutwalker.de>"]
 description = "Tmux session manager"
 license = "MIT OR Apache-2.0"
-publish = false
+publish = true
 readme = "README.md"
 categories = ["cli"]
 keywords = ["tmux", "session", "sessionizer"]
@@ -51,7 +51,37 @@ overflow-checks = true
 rpath = false
 strip = true
 
-[package.metadata.release]
-pre-release-commit-message = "Release {{crate_name}} {{version}}"
-sign-commit = true
-sign-tag = true
+[lints.rust]
+bad_style = "warn"
+dead_code = "warn"
+improper_ctypes = "warn"
+missing_copy_implementations = "warn"
+missing_debug_implementations = "warn"
+no_mangle_generic_items = "warn"
+non_shorthand_field_patterns = "warn"
+overflowing_literals = "warn"
+path_statements = "warn"
+patterns_in_fns_without_body = "warn"
+private_bounds = "warn"
+private_interfaces = "warn"
+rust_2018_idioms = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unconditional_recursion = "warn"
+unsafe_code = "warn"
+unused = "warn"
+unused_allocation = "warn"
+unused_comparisons = "warn"
+unused_crate_dependencies = "warn"
+unused_extern_crates = "warn"
+unused_import_braces = "warn"
+unused_parens = "warn"
+unused_qualifications = "warn"
+unused_results = "warn"
+
+[lints.clippy]
+all = "warn"
+cargo = "warn"
+pedantic = "warn"
+nursery = "warn"
+multiple_crate_versions = { level = "allow", priority = 1 }

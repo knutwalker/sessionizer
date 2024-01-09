@@ -1,34 +1,16 @@
-#![warn(
-    bad_style,
-    dead_code,
-    improper_ctypes,
-    missing_copy_implementations,
-    missing_debug_implementations,
-    no_mangle_generic_items,
-    non_shorthand_field_patterns,
-    overflowing_literals,
-    path_statements,
-    patterns_in_fns_without_body,
-    private_bounds,
-    private_interfaces,
-    rust_2018_idioms,
-    trivial_casts,
-    trivial_numeric_casts,
-    unconditional_recursion,
-    unsafe_code,
-    unused,
-    unused_allocation,
-    unused_comparisons,
-    unused_crate_dependencies,
-    unused_extern_crates,
-    unused_import_braces,
-    unused_parens,
-    unused_qualifications,
-    unused_results
-)]
-#![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
-#![allow(clippy::multiple_crate_versions)]
-
+//! ## Select a new tmux session from a list of running sessions or a selection of projects.
+//!
+//! # Installation
+//!
+//! ```sh
+//! $ cargo install sessionizer
+//! ```
+//!
+//! # Usage
+//!
+//! ```sh
+//! $ sessionizer --help
+//! ```
 use std::{
     cmp::Reverse,
     fmt::Display,
