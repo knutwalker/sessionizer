@@ -8,7 +8,7 @@ description = "Tmux session manager"
 license = "MIT OR Apache-2.0"
 publish = true
 readme = "README.md"
-categories = ["cli"]
+categories = ["command-line-utilities"]
 keywords = ["tmux", "session", "sessionizer"]
 
 [dependencies]
