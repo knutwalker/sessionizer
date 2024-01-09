@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/knutwalker/sessionizer/compare/v0.1.0...v0.1.1) - 2024-01-09
+
+### Other
+- Set correct category slug
+- release ([#1](https://github.com/knutwalker/sessionizer/pull/1))
+- Use variable directly
+- Publish
+- Use released versions
+- optional initial query
+- Improve cargo usage
+- Use fuzzy-select
+- init
+
 ## [0.1.0](https://github.com/knutwalker/sessionizer/releases/tag/v0.1.0) - 2024-01-09
 
 ### Other
