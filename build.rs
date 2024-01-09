@@ -11,6 +11,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .rustc_host_triple()
         .emit()?;
     let cargo_profile = std::env::var("PROFILE").unwrap();
-    println!("cargo:rustc-env=VERGEN_CARGO_PROFILE={}", cargo_profile);
+    println!("cargo:rustc-env=VERGEN_CARGO_PROFILE={cargo_profile}");
     Ok(())
 }
