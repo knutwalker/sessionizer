@@ -14,7 +14,8 @@
 use std::{
     cmp::Reverse,
     fmt::Display,
-    os::unix::process::CommandExt,
+    fs,
+    os::unix::{fs::MetadataExt as _, process::CommandExt as _},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -126,6 +127,21 @@ impl Entry {
             })
             .arg("-t")
             .arg(format!("={}", self.session_name()));
+
+        if let Self::Project(project) = self {
+            let init_file = ".sessionizer.init";
+            if let Ok(md) = fs::metadata(project.root.join(init_file)) {
+                if md.is_file() && md.mode() & 0o111 != 0 {
+                    let _ = cmd
+                        .arg(";")
+                        .arg("send-keys")
+                        .arg("-t")
+                        .arg(format!("={}:", project.name))
+                        .arg(format!("source ./{init_file}"))
+                        .arg("C-m");
+                }
+            }
+        }
 
         cmd
     }
