@@ -57,7 +57,7 @@ fn main() -> Result<()> {
 
     debug!("found {} entries", entries.len());
 
-    let Some(mut cmd) = make_selection(entries, args.query, args.use_color)? else {
+    let Some(mut cmd) = make_selection(entries, args.query(), args.use_color)? else {
         return Ok(());
     };
 
@@ -438,8 +438,8 @@ struct Args {
     #[clap(flatten)]
     selection: SelectionArgs,
 
-    #[clap()]
-    query: Option<String>,
+    #[clap(trailing_var_arg = true)]
+    query: Vec<String>,
 
     #[clap(skip)]
     use_color: bool,
@@ -466,6 +466,10 @@ impl Args {
         );
 
         Ok(args)
+    }
+
+    pub fn query(&self) -> Option<String> {
+        Some(self.query.join(" ")).filter(|q| !q.is_empty())
     }
 }
 
