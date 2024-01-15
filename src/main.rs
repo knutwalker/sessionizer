@@ -373,6 +373,7 @@ fn make_selection(
         .set_query::<String>(query)
         .set_color(color)
         .with_options(entries)
+        .with_select1()
         .select_opt()?
         .map(|entry| entry.cmd()))
 }
