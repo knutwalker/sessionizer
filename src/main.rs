@@ -14,7 +14,7 @@
 use std::{
     cmp::Reverse,
     fmt::Display,
-    fs,
+    fs::{self, Metadata},
     os::unix::{fs::MetadataExt as _, process::CommandExt as _},
     path::{Path, PathBuf},
     process::Command,
@@ -29,12 +29,16 @@ use fuzzy_select::{FuzzySelect, Select};
 use ignore::WalkBuilder;
 use kommandozeile::{
     clap,
-    color_eyre::eyre::{eyre, OptionExt},
+    color_eyre::{
+        eyre::{eyre, Context, OptionExt},
+        ErrorKind, Section,
+    },
     concolor, pkg_name, setup_clap, setup_color_eyre_builder,
-    tracing::{debug, info, warn},
+    tracing::{debug, info, trace, warn},
     verbosity_filter, Color, Global, Result, Verbose,
 };
 use panic_message::panic_message;
+use serde::Deserialize;
 
 fn main() -> Result<()> {
     let args = Args::init()?;
@@ -64,11 +68,11 @@ fn main() -> Result<()> {
     info!(?cmd);
 
     if args.dry_run {
-        let cmd = shlex::join(
+        let cmd = shlex::try_join(
             std::iter::once(cmd.get_program())
                 .chain(cmd.get_args())
                 .filter_map(|s| s.to_str()),
-        );
+        )?;
 
         println!("{cmd}");
         return Ok(());
@@ -105,46 +109,292 @@ impl Entry {
         }
     }
 
-    fn cmd(&self) -> Command {
-        let mut cmd = Command::new("tmux");
+    fn cmd(&self) -> Result<Command> {
+        let action = match self {
+            Self::Project(project) => Self::run_init(project).transpose()?,
+            Self::Session(_) => None,
+        }
+        .unwrap_or_default();
 
+        debug!(?action, "Running action on a new session");
+
+        let mut cmd = Command::new("tmux");
         if let Self::Project(project) = self {
-            let _ = cmd
-                .arg("new-session")
-                .arg("-d")
-                .arg("-c")
-                .arg(&project.root)
-                .arg("-s")
-                .arg(&project.name)
-                .arg(";");
+            let cmd = cmd
+                .args(["new-session", "-d", "-s", &project.name, "-c"])
+                .arg(&project.root);
+
+            for (key, value) in &action.env {
+                let _ = cmd.arg("-e").arg(format!("{key}={value}"));
+            }
+
+            let _ = cmd.arg(";");
         }
 
-        let _ = cmd
-            .arg(if std::env::var_os("TMUX").is_some() {
-                "switch-client"
-            } else {
-                "attach-session"
-            })
-            .arg("-t")
-            .arg(format!("={}", self.session_name()));
+        let tmux_attach = if std::env::var_os("TMUX").is_some() {
+            "switch-client"
+        } else {
+            "attach-session"
+        };
 
-        if let Self::Project(project) = self {
-            let init_file = ".sessionizer.init";
-            if let Ok(md) = fs::metadata(project.root.join(init_file)) {
-                if md.is_file() && md.mode() & 0o111 != 0 {
-                    let _ = cmd
-                        .arg(";")
-                        .arg("send-keys")
-                        .arg("-t")
-                        .arg(format!("={}:", project.name))
-                        .arg(format!("source ./{init_file}"))
-                        .arg("C-m");
+        let session_id = format!("={}", self.session_name());
+        Self::run_config(&session_id, tmux_attach, action, &mut cmd);
+
+        Ok(cmd)
+    }
+
+    fn run_init(project: &Project) -> Option<Result<Action>> {
+        enum Kind {
+            Toml,
+            Init,
+        }
+
+        const CONFIG_FILES: [&str; 4] = [
+            concat!(".", env!("CARGO_BIN_NAME"), ".toml"),
+            concat!(env!("CARGO_BIN_NAME"), ".toml"),
+            concat!(".", env!("CARGO_BIN_NAME"), ".init"),
+            concat!(env!("CARGO_BIN_NAME"), ".init"),
+        ];
+
+        let init = CONFIG_FILES.into_iter().find_map(|file| {
+            let path = project.root.join(file);
+            trace!(path = %path.display(), "Checking for sessionizer init file");
+            let md = fs::metadata(&path).ok().filter(Metadata::is_file)?;
+            let kind = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .and_then(|e| match e {
+                    "toml" => Some(Kind::Toml),
+                    "init" => {
+                        trace!(
+                            mode = md.mode(),
+                            path = %path.display(),
+                            "Checking file permissions on init file (must be 0777)"
+                        );
+                        (md.mode() == 0o777).then_some(Kind::Init)
+                    }
+                    _ => None,
+                })?;
+
+            Some((kind, file, path))
+        });
+
+        let (kind, file, path) = init?;
+
+        let config = match kind {
+            Kind::Toml => Self::run_toml_init(&path),
+            Kind::Init => Ok(Self::run_init_file(file)),
+        };
+
+        let config = config
+            .and_then(|c| Self::validate_config(project, c))
+            .with_section(|| format!("config file: `{}`", path.display()));
+
+        Some(config)
+    }
+
+    fn run_toml_init(file: &Path) -> Result<Config> {
+        let config = fs::read_to_string(file)?;
+        let config = toml::from_str::<Config>(&config);
+
+        debug!(?config, "Parsed config from file");
+
+        Ok(config?)
+    }
+
+    fn run_init_file(init_file: &str) -> Config {
+        let command = format!("source ./{init_file}");
+        Config {
+            run: vec![Run { command }],
+            ..Default::default()
+        }
+    }
+
+    fn validate_config(project: &Project, config: Config) -> Result<Action> {
+        let run = config
+            .run
+            .into_iter()
+            .enumerate()
+            .map(|(idx, run)| {
+                let _ = Self::validate_command("Run", idx, &run.command)?;
+                Ok(run.command)
+            })
+            .collect::<Result<_>>()?;
+
+        let windows = config
+            .windows
+            .into_iter()
+            .enumerate()
+            .map(|(idx, window)| {
+                let command = window
+                    .command
+                    .as_deref()
+                    .map(|o| Self::validate_command("Window", idx, o))
+                    .transpose()?;
+
+                let name = window
+                    .name
+                    .as_deref()
+                    .or_else(|| {
+                        command
+                            .as_deref()
+                            .and_then(|c| c.first().map(String::as_str))
+                    })
+                    .map(str::trim)
+                    .filter(|o| !o.is_empty())
+                    .map_or_else(|| format!("Window[{idx}]"), ToOwned::to_owned);
+
+                let mut dir = window.dir;
+                if let Some(dir) = dir.as_mut() {
+                    trace!(dir = %dir.display(), "Attemting to use dir as base for new window");
+
+                    if dir.is_relative() {
+                        *dir = project.root.join(dir.as_path());
+                    }
+
+                    *dir = dir
+                        .canonicalize()
+                        .with_context(|| {
+                            format!(
+                                "Window[{idx}]: Invalid window directory: `{}`",
+                                dir.display()
+                            )
+                        })
+                        .note("The path might not exist or contain non-directory segments")?;
+
+                    if !dir.is_dir() {
+                        return Err(eyre!(
+                            "Window[{idx}]: Invalid window directory: `{}`",
+                            dir.display()
+                        )
+                        .note("The path is not a directory"));
+                    }
+
+                    trace!(dir = %dir.display(), "Using dir as base for new window");
                 }
+
+                let window = SpawnWindow {
+                    name,
+                    dir,
+                    command,
+                    remain: window.remain,
+                };
+
+                Ok(window)
+            })
+            .collect::<Result<_>>()?;
+
+        let env = config.env.into_iter().collect();
+
+        let action = Action { env, run, windows };
+        Ok(action)
+    }
+
+    fn validate_command(section: &str, idx: usize, cmd: &str) -> Result<Vec<String>> {
+        if cmd.trim().is_empty() {
+            return Err(eyre!("{section}[{idx}]: Command cannot be empty")
+                .note("To run nothing, remove the `command` entry entirely"));
+        }
+        if cmd.contains(';') {
+            return Err(
+                eyre!("{section}[{idx}]: Command contains a semicolon: `{cmd}`")
+                    .note("Only a single command can be run.")
+                    .note(concat!(
+                        "To run multiple commands, use a shell script ",
+                        "or similar and run that one instead."
+                    )),
+            );
+        }
+
+        shlex::split(cmd).ok_or_else(|| {
+            eyre!("{section}[{idx}]: Failed to split command into shell arguments").note(concat!(
+                "The command might end while inside a quotation ",
+                "or right after an unescaped backslash."
+            ))
+        })
+    }
+
+    fn run_config(session_id: &str, attach: &str, action: Action, cmd: &mut Command) {
+        let _ = cmd.args([attach, "-t", &session_id]);
+
+        if !action.run.is_empty() {
+            let session_pane = format!("{session_id}:");
+            for run in action.run {
+                let _ = cmd.args([";", "send-keys", "-t", &session_pane, &run, "C-m"]);
             }
         }
 
-        cmd
+        for window in action.windows {
+            let _ = cmd.args([";", "new-window", "-d", "-n", &window.name]);
+
+            if let Some(dir) = window.dir {
+                let _ = cmd.arg("-c").arg(dir);
+            }
+
+            if let Some(command) = window.command {
+                let _ = cmd.args(command);
+            }
+
+            if let Some(remain) = window.remain {
+                let remain = if remain { "on" } else { "off" };
+                let _ = cmd.args([
+                    ";",
+                    "set-option",
+                    "-t",
+                    &window.name,
+                    "remain-on-exit",
+                    remain,
+                ]);
+            }
+        }
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Window {
+    name: Option<String>,
+    #[serde(alias = "path")]
+    #[serde(alias = "wd")]
+    #[serde(alias = "pwd")]
+    #[serde(alias = "cwd")]
+    dir: Option<PathBuf>,
+    #[serde(alias = "cmd")]
+    #[serde(alias = "run")]
+    command: Option<String>,
+    #[serde(alias = "keep-alive")]
+    remain: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Run {
+    #[serde(alias = "cmd")]
+    command: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct Config {
+    #[serde(default)]
+    env: indexmap::IndexMap<String, String>,
+    #[serde(default)]
+    #[serde(alias = "window")]
+    windows: Vec<Window>,
+    #[serde(default)]
+    run: Vec<Run>,
+}
+
+#[derive(Debug, Clone)]
+struct SpawnWindow {
+    name: String,
+    dir: Option<PathBuf>,
+    command: Option<Vec<String>>,
+    remain: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct Action {
+    env: Vec<(String, String)>,
+    run: Vec<String>,
+    windows: Vec<SpawnWindow>,
 }
 
 impl Display for Entry {
@@ -199,7 +449,7 @@ fn spawn_collector() -> (SyncSender<Entry>, Thread<Vec<Entry>>) {
         let mut entries = rx
             .into_iter()
             .inspect(|entry| {
-                debug!(?entry);
+                trace!(?entry);
             })
             .collect::<Vec<_>>();
         entries.sort();
@@ -232,10 +482,14 @@ fn find_tmux_sessions(tx: &SyncSender<Entry>) -> Thread<()> {
     let thread = thread::spawn(move || {
         let mut cmd = Command::new("tmux");
 
-        let cmd = cmd.arg("list-sessions").arg("-F").arg(concat!(
-            "#{session_attached},#{session_last_attached},#{session_name},",
-            "#{session_path},created #{t/f/%Y-%m-%d %H#:%M:session_created}"
-        ));
+        let cmd = cmd.args([
+            "list-sessions",
+            "-F",
+            concat!(
+                "#{session_attached},#{session_last_attached},#{session_name},",
+                "#{session_path},created #{t/f/%Y-%m-%d %H#:%M:session_created}"
+            ),
+        ]);
 
         match cmd.output() {
             Ok(out) => {
@@ -368,14 +622,15 @@ fn make_selection(
     query: Option<String>,
     color: bool,
 ) -> Result<Option<Command>> {
-    Ok(FuzzySelect::new()
+    FuzzySelect::new()
         .with_prompt("Select a session or project: >")
         .set_query::<String>(query)
         .set_color(color)
         .with_options(entries)
         .with_select1()
         .select_opt()?
-        .map(|entry| entry.cmd()))
+        .map(|entry| entry.cmd())
+        .transpose()
 }
 
 impl Select for Entry {
@@ -453,9 +708,25 @@ impl Args {
             .verbose_from(pkg_name!(), |a| a.verbose)
             .run();
 
+        let info = Info::new();
         setup_color_eyre_builder()
+            .capture_span_trace_by_default(cfg!(debug_assertions))
+            .display_location_section(cfg!(debug_assertions))
             .issue_url(concat!(env!("CARGO_PKG_REPOSITORY"), "/issues/new"))
-            .add_issue_metadata("version", env!("CARGO_PKG_VERSION"))
+            .add_issue_metadata("version", info.build_version)
+            .add_issue_metadata("build_at", info.build_timestamp)
+            .add_issue_metadata("built_from", info.commit_sha)
+            .add_issue_metadata("build_rust_version", info.rustc_version)
+            .add_issue_metadata("host_triple", info.host_triple)
+            .add_issue_metadata("target_triple", info.target_triple)
+            .add_issue_metadata("cargo_profile", info.cargo_profile)
+            .issue_filter(|o| match o {
+                ErrorKind::NonRecoverable(_) => true,
+                ErrorKind::Recoverable(e) => {
+                    let msg = e.to_string();
+                    !(msg.contains("Window[") || msg.contains("Run["))
+                }
+            })
             .install()?;
 
         args.use_color = concolor::get(concolor::Stream::Stdout).color();
