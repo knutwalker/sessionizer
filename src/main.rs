@@ -732,7 +732,7 @@ impl<T> Thread<T> {
     disable_help_subcommand(true),
     infer_long_args(true)
 )]
-struct Args {
+pub struct Args {
     #[clap(flatten)]
     verbose: Verbose<Global>,
 
@@ -741,24 +741,24 @@ struct Args {
 
     /// Don't switch, just print the final tmux command.
     #[clap(long, short = 'n')]
-    dry_run: bool,
+    pub dry_run: bool,
 
     /// Skip initialization file permission checks.
     #[clap(long)]
-    insecure: bool,
+    pub insecure: bool,
 
     #[clap(flatten)]
-    selection: SelectionArgs,
+    pub selection: SelectionArgs,
 
     #[clap(trailing_var_arg = true)]
-    query: Vec<String>,
+    pub query: Vec<String>,
 
     #[clap(skip)]
     use_color: bool,
 }
 
 impl Args {
-    pub fn init() -> Result<Self> {
+    fn init() -> Result<Self> {
         let mut args = setup_clap::<Self>()
             .color_from(|a| a.color)
             .verbose_from(pkg_name!(), |a| a.verbose)
@@ -798,21 +798,21 @@ impl Args {
         Ok(args)
     }
 
-    pub fn query(&self) -> Option<String> {
+    fn query(&self) -> Option<String> {
         Some(self.query.join(" ")).filter(|q| !q.is_empty())
     }
 }
 
-#[derive(Debug, clap::Args)]
+#[derive(Copy, Clone, Debug, clap::Args)]
 #[group(multiple = false)]
-struct SelectionArgs {
+pub struct SelectionArgs {
     /// Only include running tmux sessions.
     #[clap(long, short = 't')]
-    tmux_only: bool,
+    pub tmux_only: bool,
 
     /// Only include project directories.
     #[clap(long, short = 'p')]
-    projects_only: bool,
+    pub projects_only: bool,
 }
 
 const fn short_version() -> &'static str {
