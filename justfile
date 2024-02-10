@@ -29,9 +29,10 @@ cntest:
 
 # Generate the README file
 readme:
-    cargo doc2readme --expand-macros
+    cargo doc2readme --expand-macros --bin
 
 # aliases
 alias c := check
 alias t := test
 alias nt := nextest
+alias md := readme

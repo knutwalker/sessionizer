@@ -1,4 +1,4 @@
-# sessionizer [![CI Status][ci-badge]][ci-url] [![Crates.io][crates-badge]][crates-url] [![Docs][docs-badge]][docs-url] ![License: MIT OR Apache-2.0][license-badge] ![Rust Version: none][rust-version-badge]
+# sessionizer [![CI Status][ci-badge]][ci-url] [![Crates.io][crates-badge]][crates-url] [![Docs][docs-badge]][docs-url] ![License: MIT OR Apache-2.0][license-badge] ![Rust Version: 1.75.0][rust-version-badge]
 
 [ci-badge]: https://github.com/knutwalker/sessionizer/actions/workflows/checks.yml/badge.svg
 [ci-url]: https://github.com/knutwalker/sessionizer
@@ -7,7 +7,7 @@
 [docs-badge]: https://img.shields.io/badge/docs-latest-blue.svg?style=shield
 [docs-url]: https://docs.rs/sessionizer
 [license-badge]: https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg?style=shield
-[rust-version-badge]: https://img.shields.io/badge/rustc--orange.svg?style=shield
+[rust-version-badge]: https://img.shields.io/badge/rustc-1.75.0-orange.svg?style=shield
 
 > [!WARNING]
 > Very much a work in progress.
