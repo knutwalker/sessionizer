@@ -12,11 +12,17 @@ categories = ["command-line-utilities"]
 keywords = ["tmux", "session", "sessionizer"]
 
 [dependencies]
+fuzzy-select = "0.1.1"
 home = "0.5.9"
 ignore = "0.4.21"
-fuzzy-select = "0.1.1"
-panic-message = "0.3.0"
+indexmap = { version = "2.2.2", features = ["serde"] }
+serde = { version = "1.0.195", features = ["derive"] }
 shlex = "1.2.0"
+panic-message = "0.3.0"
+toml = { version = "0.8.8", default-features = false, features = [
+  "parse",
+  "indexmap",
+] }
 
 [dependencies.kommandozeile]
 version = "0.1.0"
