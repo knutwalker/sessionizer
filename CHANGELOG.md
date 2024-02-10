@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ## [0.1.5](https://github.com/knutwalker/sessionizer/compare/0.1.4...0.1.5) - 2024-02-10
 
--Update readme
--Update release-plz config
--Fix changelog
+- Update readme
+- Update release-plz config
+- Fix changelog
 
 ## [0.1.4](https://github.com/knutwalker/sessionizer/compare/0.1.3...0.1.4) - 2024-02-10
 
