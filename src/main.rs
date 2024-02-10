@@ -61,7 +61,8 @@ fn main() -> Result<()> {
 
     debug!("found {} entries", entries.len());
 
-    let Some(mut cmd) = make_selection(entries, args.query(), args.use_color)? else {
+    let Some(mut cmd) = make_selection(entries, args.query(), args.use_color, !args.insecure)?
+    else {
         return Ok(());
     };
 
@@ -109,9 +110,9 @@ impl Entry {
         }
     }
 
-    fn cmd(&self) -> Result<Command> {
+    fn cmd(&self, secure: bool) -> Result<Command> {
         let action = match self {
-            Self::Project(project) => Self::run_init(project).transpose()?,
+            Self::Project(project) => Self::try_init(project, secure).transpose()?,
             Self::Session(_) => None,
         }
         .unwrap_or_default();
@@ -138,17 +139,23 @@ impl Entry {
         };
 
         let session_id = format!("={}", self.session_name());
-        Self::run_config(&session_id, tmux_attach, action, &mut cmd);
+        Self::run_action(&session_id, tmux_attach, action, &mut cmd);
 
         Ok(cmd)
     }
 
-    fn run_init(project: &Project) -> Option<Result<Action>> {
-        enum Kind {
-            Toml,
-            Init,
-        }
+    fn try_init(project: &Project, secure: bool) -> Option<Result<Action>> {
+        let init = Self::find_init(project)?;
+        let config = Self::load_init(secure, &init).with_context(|| {
+            format!(
+                "Failed to run sessionizer init file: `{}`",
+                init.path.display()
+            )
+        });
+        Some(config.and_then(|c| Self::validate_config(project, c)))
+    }
 
+    fn find_init(project: &Project) -> Option<Init> {
         const CONFIG_FILES: [&str; 4] = [
             concat!(".", env!("CARGO_BIN_NAME"), ".toml"),
             concat!(env!("CARGO_BIN_NAME"), ".toml"),
@@ -156,44 +163,74 @@ impl Entry {
             concat!(env!("CARGO_BIN_NAME"), ".init"),
         ];
 
-        let init = CONFIG_FILES.into_iter().find_map(|file| {
+        CONFIG_FILES.into_iter().find_map(|file| {
             let path = project.root.join(file);
             trace!(path = %path.display(), "Checking for sessionizer init file");
-            let md = fs::metadata(&path).ok().filter(Metadata::is_file)?;
+            let metadata = fs::metadata(&path).ok().filter(Metadata::is_file)?;
             let kind = path
                 .extension()
                 .and_then(|e| e.to_str())
                 .and_then(|e| match e {
                     "toml" => Some(Kind::Toml),
-                    "init" => {
-                        trace!(
-                            mode = md.mode(),
-                            path = %path.display(),
-                            "Checking file permissions on init file (must be 0777)"
-                        );
-                        (md.mode() == 0o777).then_some(Kind::Init)
-                    }
+                    "init" => Some(Kind::Init),
                     _ => None,
                 })?;
 
-            Some((kind, file, path))
-        });
-
-        let (kind, file, path) = init?;
-
-        let config = match kind {
-            Kind::Toml => Self::run_toml_init(&path),
-            Kind::Init => Ok(Self::run_init_file(file)),
-        };
-
-        let config = config
-            .and_then(|c| Self::validate_config(project, c))
-            .with_section(|| format!("config file: `{}`", path.display()));
-
-        Some(config)
+            trace!(kind = ?kind, path = %path.display(), "Found sessionizer init file");
+            Some(Init {
+                file,
+                path,
+                kind,
+                metadata,
+            })
+        })
     }
 
-    fn run_toml_init(file: &Path) -> Result<Config> {
+    fn load_init(secure: bool, init: &Init) -> Result<Config> {
+        if secure {
+            let check = Self::check_permissions(init.kind, &init.metadata);
+
+            if let Err(check) = check {
+                return Err(match init.kind {
+                    Kind::Toml => check.suggestion("Set the file permissions to 600"),
+                    Kind::Init => check.suggestion("Set the file permissions to 700"),
+                })
+                .note("Running with `--insecure` will disable this check");
+            };
+        }
+
+        match init.kind {
+            Kind::Toml => Self::load_toml_config(&init.path),
+            Kind::Init => Ok(Self::create_init_file_config(init.file)),
+        }
+    }
+
+    fn check_permissions(kind: Kind, md: &Metadata) -> Result<()> {
+        match kind {
+            Kind::Toml => {
+                let permissions = md.mode();
+                if permissions & 0o400 != 0o400 {
+                    return Err(eyre!("File is not readable"));
+                }
+                if permissions & 0o033 != 0 {
+                    return Err(eyre!("File can be written or executed by others"));
+                }
+            }
+            Kind::Init => {
+                let permissions = md.mode();
+                if permissions & 0o600 != 0o600 {
+                    return Err(eyre!("File is not readable or executable"));
+                }
+                if permissions & 0o033 != 0 {
+                    return Err(eyre!("File can be written or executed by others"));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn load_toml_config(file: &Path) -> Result<Config> {
         let config = fs::read_to_string(file)?;
         let config = toml::from_str::<Config>(&config);
 
@@ -202,7 +239,7 @@ impl Entry {
         Ok(config?)
     }
 
-    fn run_init_file(init_file: &str) -> Config {
+    fn create_init_file_config(init_file: &str) -> Config {
         let command = format!("source ./{init_file}");
         Config {
             run: vec![Run { command }],
@@ -314,7 +351,7 @@ impl Entry {
         })
     }
 
-    fn run_config(session_id: &str, attach: &str, action: Action, cmd: &mut Command) {
+    fn run_action(session_id: &str, attach: &str, action: Action, cmd: &mut Command) {
         let _ = cmd.args([attach, "-t", &session_id]);
 
         if !action.run.is_empty() {
@@ -348,6 +385,20 @@ impl Entry {
             }
         }
     }
+}
+
+#[derive(Copy, Clone, Debug)]
+enum Kind {
+    Toml,
+    Init,
+}
+
+#[derive(Debug)]
+struct Init {
+    file: &'static str,
+    path: PathBuf,
+    kind: Kind,
+    metadata: Metadata,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -621,6 +672,7 @@ fn make_selection(
     entries: Vec<Entry>,
     query: Option<String>,
     color: bool,
+    secure: bool,
 ) -> Result<Option<Command>> {
     FuzzySelect::new()
         .with_prompt("Select a session or project: >")
@@ -629,7 +681,7 @@ fn make_selection(
         .with_options(entries)
         .with_select1()
         .select_opt()?
-        .map(|entry| entry.cmd())
+        .map(|entry| entry.cmd(secure))
         .transpose()
 }
 
@@ -691,6 +743,10 @@ struct Args {
     #[clap(long, short = 'n')]
     dry_run: bool,
 
+    /// Skip initialization file permission checks.
+    #[clap(long)]
+    insecure: bool,
+
     #[clap(flatten)]
     selection: SelectionArgs,
 
@@ -723,8 +779,10 @@ impl Args {
             .issue_filter(|o| match o {
                 ErrorKind::NonRecoverable(_) => true,
                 ErrorKind::Recoverable(e) => {
-                    let msg = e.to_string();
-                    !(msg.contains("Window[") || msg.contains("Run["))
+                    !std::iter::successors(Some(e), |e| e.source()).any(|e| {
+                        let msg = e.to_string();
+                        msg.contains("Window[") || msg.contains("Run[")
+                    })
                 }
             })
             .install()?;
