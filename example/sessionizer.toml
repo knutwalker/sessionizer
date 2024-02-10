@@ -1,0 +1,15 @@
+[env]
+NEO4J_DATABASE = "neo4j"
+NEO4J_TEST_URI = "bolt://localhost:7687"
+
+[[windows]]
+name = "neo4j"
+dir = "./db/neo4j-community"
+command = "./bin/neo4j-admin server console"
+remain = true
+
+[[windows]]
+command = "colima start --verbose --very-verbose --foreground"
+
+[[run]]
+command = "echo 'hello from sessoinizer'"
