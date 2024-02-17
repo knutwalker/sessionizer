@@ -114,7 +114,13 @@ impl Entry {
                 .args(["new-session", "-d", "-s", &project.name, "-c"])
                 .arg(&project.root);
 
-            for (key, value) in &action.env {
+            for (key, value) in action
+                .env
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .chain(project.root.to_str().map(|r| ("SESSION_ROOT", r)))
+                .chain(Some(("SESSION_NAME", project.name.as_str())))
+            {
                 let _ = cmd.arg("-e").arg(format!("{key}={value}"));
             }
 
