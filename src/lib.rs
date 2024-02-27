@@ -261,17 +261,39 @@ impl Entry {
                 let command = window
                     .command
                     .as_deref()
-                    .map(|o| Self::validate_command("Window", idx, o))
+                    .map(|o| -> Result<_> {
+                        let command = Self::validate_command("Window.command", idx, o)?;
+                        Ok(WindowCommand::Command {
+                            command,
+                            remain: window.remain,
+                        })
+                    })
                     .transpose()?;
+
+                let run = window
+                    .run
+                    .map(|run| -> Result<_> {
+                        let cmd = Self::validate_command("Window.run", idx, &run)?;
+                        Ok(WindowCommand::Run {
+                            run,
+                            name: cmd
+                                .into_iter()
+                                .next()
+                                .expect("validate returns a non-empty command"),
+                        })
+                    })
+                    .transpose()?;
+
+                if command.is_some() && run.is_some() {
+                    return Err(eyre!("Window[{idx}]: Cannot have both `command` and `run`"));
+                }
+
+                let command = command.or(run);
 
                 let name = window
                     .name
                     .as_deref()
-                    .or_else(|| {
-                        command
-                            .as_deref()
-                            .and_then(|c| c.first().map(String::as_str))
-                    })
+                    .or_else(|| command.as_ref().map(WindowCommand::first))
                     .map(str::trim)
                     .filter(|o| !o.is_empty())
                     .map_or_else(|| format!("Window[{idx}]"), ToOwned::to_owned);
@@ -305,12 +327,7 @@ impl Entry {
                     trace!(dir = %dir.display(), "Using dir as base for new window");
                 }
 
-                let window = SpawnWindow {
-                    name,
-                    dir,
-                    command,
-                    remain: window.remain,
-                };
+                let window = SpawnWindow { name, dir, command };
 
                 Ok(window)
             })
@@ -338,12 +355,16 @@ impl Entry {
             );
         }
 
-        shlex::split(cmd).ok_or_else(|| {
+        let cmd = shlex::split(cmd).ok_or_else(|| {
             eyre!("{section}[{idx}]: Failed to split command into shell arguments").note(concat!(
                 "The command might end while inside a quotation ",
                 "or right after an unescaped backslash."
             ))
-        })
+        })?;
+
+        assert!(!cmd.is_empty(), "shlex::split returned an empty command");
+
+        Ok(cmd)
     }
 
     fn run_action(session_id: &str, attach: &str, action: Action, cmd: &mut Command) {
@@ -364,19 +385,25 @@ impl Entry {
             }
 
             if let Some(command) = window.command {
-                let _ = cmd.args(command);
-            }
-
-            if let Some(remain) = window.remain {
-                let remain = if remain { "on" } else { "off" };
-                let _ = cmd.args([
-                    ";",
-                    "set-option",
-                    "-t",
-                    &window.name,
-                    "remain-on-exit",
-                    remain,
-                ]);
+                match command {
+                    WindowCommand::Command { command, remain } => {
+                        let _ = cmd.args(command);
+                        if let Some(remain) = remain {
+                            let remain = if remain { "on" } else { "off" };
+                            let _ = cmd.args([
+                                ";",
+                                "set-option",
+                                "-t",
+                                &window.name,
+                                "remain-on-exit",
+                                remain,
+                            ]);
+                        }
+                    }
+                    WindowCommand::Run { run, .. } => {
+                        let _ = cmd.args([";", "send-keys", "-t", &window.name, &run, "C-m"]);
+                    }
+                }
             }
         }
     }
@@ -400,15 +427,16 @@ struct Init {
 struct Window {
     name: Option<String>,
     #[serde(alias = "path")]
+    #[serde(alias = "workdir")]
     #[serde(alias = "wd")]
     #[serde(alias = "pwd")]
     #[serde(alias = "cwd")]
     dir: Option<PathBuf>,
     #[serde(alias = "cmd")]
-    #[serde(alias = "run")]
     command: Option<String>,
     #[serde(alias = "keep-alive")]
     remain: Option<bool>,
+    run: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -432,8 +460,32 @@ struct Config {
 struct SpawnWindow {
     name: String,
     dir: Option<PathBuf>,
-    command: Option<Vec<String>>,
-    remain: Option<bool>,
+    command: Option<WindowCommand>,
+}
+
+#[derive(Debug, Clone)]
+enum WindowCommand {
+    /// A command takes over the window. Only that command is run
+    /// and the window is closed when the command exits (depending
+    /// on the tmux configuration).
+    /// If remain is set to Some(true) or tmux is configured to set
+    /// remain-on-exit to on, the window will remain open after the
+    /// command exits.
+    Command {
+        command: Vec<String>,
+        remain: Option<bool>,
+    },
+    /// Running a command as if it was typed in the window.
+    Run { run: String, name: String },
+}
+
+impl WindowCommand {
+    fn first(&self) -> &str {
+        match self {
+            Self::Command { command, .. } => command[0].as_str(),
+            Self::Run { name, .. } => name.as_str(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
