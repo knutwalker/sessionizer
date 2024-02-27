@@ -37,3 +37,4 @@ Cargo.lock
 *.pdb
 
 !.github/
+.cargoinstalled
