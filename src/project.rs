@@ -1,4 +1,7 @@
-use std::{path::Path, sync::mpsc::SyncSender};
+use std::{
+    path::{Path, PathBuf},
+    sync::mpsc::SyncSender,
+};
 
 use ignore::{DirEntry, WalkBuilder, WalkState};
 
@@ -24,7 +27,7 @@ pub fn find_projects(home: &Path, tx: &SyncSender<Entry>) {
 
 fn process_dir_entry(entry: Result<DirEntry, ignore::Error>, tx: &SyncSender<Entry>) -> WalkState {
     match entry {
-        Ok(entry) => match process_dir(entry) {
+        Ok(entry) => match process_dir(entry.depth(), entry.into_path()) {
             DirResult::Ignored(state) => state,
             DirResult::Handle(entry, state) => {
                 if tx.send(entry).is_err() {
@@ -46,13 +49,10 @@ enum DirResult {
     Handle(Entry, WalkState),
 }
 
-fn process_dir(entry: DirEntry) -> DirResult {
-    let depth = entry.depth();
+fn process_dir(depth: usize, path: PathBuf) -> DirResult {
     if depth == 0 {
         return DirResult::Ignored(WalkState::Continue);
     }
-
-    let path = entry.into_path();
 
     let name = path
         .file_name()
@@ -90,4 +90,33 @@ fn process_dir(entry: DirEntry) -> DirResult {
     });
 
     DirResult::Handle(project, state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ignore_root_entries() {
+        let result = process_dir(0, PathBuf::from("/"));
+        assert!(matches!(result, DirResult::Ignored(WalkState::Continue)));
+    }
+
+    #[test]
+    fn replace_invalid_chars_in_name() {
+        let result = process_dir(1, PathBuf::from("/home/user/dev/project.name"));
+        let DirResult::Handle(Entry::Project(project), _) = result else {
+            panic!("expected project entry");
+        };
+        assert_eq!(project.name, "project_name");
+    }
+
+    #[test]
+    fn search_path_is_the_last_depth_path_elements() {
+        let result = process_dir(3, PathBuf::from("/home/user/dev/project-name/src"));
+        let DirResult::Handle(Entry::Project(project), _) = result else {
+            panic!("expected project entry");
+        };
+        assert_eq!(project.search_path, "dev/project-name/src");
+    }
 }
