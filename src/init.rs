@@ -1,4 +1,5 @@
 use std::{
+    fmt,
     fs::{self, Metadata},
     os::unix::fs::MetadataExt as _,
     path::{Path, PathBuf},
@@ -8,7 +9,7 @@ use kommandozeile::color_eyre::{
     eyre::{eyre, Context as _},
     Section as _,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::{
     action::{Action, SpawnWindow, WindowCommand},
@@ -138,35 +139,25 @@ fn validate_config(project: &Project, config: Config) -> Result<Action> {
         .map(|(idx, window)| {
             let command = window
                 .command
-                .as_deref()
-                .map(|o| -> Result<_> {
-                    let command = validate_command("Window.command", idx, o)?;
-                    Ok(WindowCommand::Command {
-                        command,
-                        remain: window.remain,
-                    })
+                .map(|cmd| -> Result<_> {
+                    let command = validate_command("Window.command", idx, &cmd)?;
+                    let remain = match window.on_exit {
+                        Some(OnExit::Shell) => {
+                            return Ok(WindowCommand::Run {
+                                run: cmd,
+                                name: command
+                                    .into_iter()
+                                    .next()
+                                    .expect("validate returns a non-empty command"),
+                            });
+                        }
+                        Some(OnExit::Destroy) => Some(false),
+                        Some(OnExit::Deactivate) => Some(true),
+                        None => None,
+                    };
+                    Ok(WindowCommand::Command { command, remain })
                 })
                 .transpose()?;
-
-            let run = window
-                .run
-                .map(|run| -> Result<_> {
-                    let cmd = validate_command("Window.run", idx, &run)?;
-                    Ok(WindowCommand::Run {
-                        run,
-                        name: cmd
-                            .into_iter()
-                            .next()
-                            .expect("validate returns a non-empty command"),
-                    })
-                })
-                .transpose()?;
-
-            if command.is_some() && run.is_some() {
-                return Err(eyre!("Window[{idx}]: Cannot have both `command` and `run`"));
-            }
-
-            let command = command.or(run);
 
             let name = window
                 .name
@@ -259,7 +250,22 @@ struct Init {
     metadata: Metadata,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct Config {
+    #[serde(default)]
+    env: indexmap::IndexMap<String, String>,
+    #[serde(default)]
+    #[serde(alias = "window")]
+    windows: Vec<Window>,
+    #[serde(default)]
+    run: Vec<Run>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct Window {
     name: Option<String>,
     #[serde(alias = "path")]
@@ -269,25 +275,267 @@ struct Window {
     #[serde(alias = "cwd")]
     dir: Option<PathBuf>,
     #[serde(alias = "cmd")]
+    #[serde(alias = "run")]
     command: Option<String>,
     #[serde(alias = "keep-alive")]
-    remain: Option<bool>,
-    run: Option<String>,
+    #[serde(alias = "remain")]
+    on_exit: Option<OnExit>,
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+enum OnExit {
+    Destroy,
+    Deactivate,
+    Shell,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct Run {
     #[serde(alias = "cmd")]
+    #[serde(alias = "run")]
     command: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-struct Config {
-    #[serde(default)]
-    env: indexmap::IndexMap<String, String>,
-    #[serde(default)]
-    #[serde(alias = "window")]
-    windows: Vec<Window>,
-    #[serde(default)]
-    run: Vec<Run>,
+impl<'de> Deserialize<'de> for OnExit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        const VARIANTS: &[&str] = &["destroy", "deactivate", "shell"];
+
+        struct OnExitVisitor;
+        impl<'de> serde::de::Visitor<'de> for OnExitVisitor {
+            type Value = OnExit;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(concat!(
+                    "a valid `on-exit` value: One of ",
+                    r#"One of "destroy" or `true`, "deactivate", or "shell" or `false`"#
+                ))
+            }
+
+            fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                if v {
+                    Ok(OnExit::Shell)
+                } else {
+                    Ok(OnExit::Destroy)
+                }
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match v {
+                    "destroy" | "kill" => Ok(OnExit::Destroy),
+                    "deactivate" | "inactive" | "remain" => Ok(OnExit::Deactivate),
+                    "keep" | "shell" | "stay" => Ok(OnExit::Shell),
+                    _ => Err(serde::de::Error::unknown_variant(v, VARIANTS)),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(OnExitVisitor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use indexmap::IndexMap;
+
+    use super::*;
+
+    #[test]
+    fn toml_format() {
+        let config = r#"
+            [env]
+            FOO = "bar"
+            BAZ = "qux"
+
+            [[run]]
+            cmd = "echo hello"
+
+            [[window]]
+            name = "test"
+            pwd = "dir"
+            cmd = "echo world"
+            on-exit = "stay"
+        "#;
+
+        let config = toml::from_str::<Config>(config).unwrap();
+        assert_eq!(
+            config,
+            Config {
+                env: IndexMap::from_iter([
+                    ("FOO".to_owned(), "bar".to_owned()),
+                    ("BAZ".to_owned(), "qux".to_owned()),
+                ]),
+                run: vec![Run {
+                    command: "echo hello".to_owned()
+                }],
+                windows: vec![Window {
+                    name: Some("test".to_owned()),
+                    dir: Some("dir".into()),
+                    command: Some("echo world".to_owned()),
+                    on_exit: Some(OnExit::Shell),
+                }],
+            }
+        );
+    }
+
+    #[test]
+    fn run_aliases() {
+        for cmd in &["cmd", "run", "command"] {
+            let config = format!(
+                r#"
+                    [[run]]
+                    {cmd} = "echo hello"
+                "#,
+            );
+
+            let config = toml::from_str::<Config>(&config).unwrap();
+            assert_eq!(
+                config,
+                Config {
+                    run: vec![Run {
+                        command: "echo hello".to_owned()
+                    }],
+                    ..Default::default()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn window_aliases() {
+        for window in &["window", "windows"] {
+            let config = format!(
+                r#"
+                    [[{window}]]
+                "#,
+            );
+
+            let config = toml::from_str::<Config>(&config).unwrap();
+            assert_eq!(
+                config,
+                Config {
+                    windows: vec![Window::default()],
+                    ..Default::default()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn window_run_aliases() {
+        for cmd in &["cmd", "run", "command"] {
+            let config = format!(
+                r#"
+                    [[window]]
+                    {cmd} = "echo world"
+                "#,
+            );
+
+            let config = toml::from_str::<Config>(&config).unwrap();
+            assert_eq!(
+                config,
+                Config {
+                    windows: vec![Window {
+                        command: Some("echo world".to_owned()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn window_dir_aliases() {
+        for dir in &["path", "workdir", "wd", "pwd", "cwd", "dir"] {
+            let config = format!(
+                r#"
+                    [[window]]
+                    {dir} = "dir"
+                "#,
+            );
+
+            let config = toml::from_str::<Config>(&config).unwrap();
+            assert_eq!(
+                config,
+                Config {
+                    windows: vec![Window {
+                        dir: Some("dir".into()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn window_on_exit_aliases() {
+        for on_exit in &["keep-alive", "remain", "on-exit"] {
+            let config = format!(
+                r#"
+                    [[window]]
+                    {on_exit} = "stay"
+                "#,
+            );
+
+            let config = toml::from_str::<Config>(&config).unwrap();
+            assert_eq!(
+                config,
+                Config {
+                    windows: vec![Window {
+                        on_exit: Some(OnExit::Shell),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn window_on_exit_values() {
+        for (on_exit, expected) in [
+            (r#""kill""#, OnExit::Destroy),
+            (r#""destroy""#, OnExit::Destroy),
+            (r"false", OnExit::Destroy),
+            (r#""inactive""#, OnExit::Deactivate),
+            (r#""remain""#, OnExit::Deactivate),
+            (r#""deactivate""#, OnExit::Deactivate),
+            (r#""stay""#, OnExit::Shell),
+            (r#""keep""#, OnExit::Shell),
+            (r#""shell""#, OnExit::Shell),
+            (r"true", OnExit::Shell),
+        ] {
+            let config = format!(
+                r#"
+                    [[window]]
+                    on-exit = {on_exit}
+                "#,
+            );
+
+            let config = toml::from_str::<Config>(&config).unwrap();
+            assert_eq!(
+                config,
+                Config {
+                    windows: vec![Window {
+                        on_exit: Some(expected),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }
+            );
+        }
+    }
 }
