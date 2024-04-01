@@ -2,9 +2,7 @@ use std::fmt::Display;
 
 use fuzzy_select::{FuzzySelect, Select};
 
-use crate::entry::Entry;
-
-use super::Result;
+use crate::{Entry, Result};
 
 pub struct Selection {
     pub entries: Vec<Entry>,

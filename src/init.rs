@@ -11,14 +11,48 @@ use kommandozeile::color_eyre::{
 };
 use serde::{Deserialize, Deserializer};
 
-use crate::{
-    action::{Action, SpawnWindow, WindowCommand},
-    entry::Project,
-};
+use crate::{debug, trace, Project, Result};
 
-use super::{debug, trace, Result};
+#[derive(Debug, Clone, Default)]
+pub struct Init {
+    pub env: Vec<(String, String)>,
+    pub run: Vec<String>,
+    pub windows: Vec<SpawnWindow>,
+}
 
-pub fn find_action(project: &Project, secure: bool) -> Option<Result<Action>> {
+#[derive(Debug, Clone)]
+pub struct SpawnWindow {
+    pub name: String,
+    pub dir: Option<PathBuf>,
+    pub command: Option<WindowCommand>,
+}
+
+#[derive(Debug, Clone)]
+pub enum WindowCommand {
+    /// A command takes over the window. Only that command is run
+    /// and the window is closed when the command exits (depending
+    /// on the tmux configuration).
+    /// If remain is set to Some(true) or tmux is configured to set
+    /// remain-on-exit to on, the window will remain open after the
+    /// command exits.
+    Command {
+        command: Vec<String>,
+        remain: Option<bool>,
+    },
+    /// Running a command as if it was typed in the window.
+    Run { run: String, name: String },
+}
+
+impl WindowCommand {
+    pub fn first(&self) -> &str {
+        match self {
+            Self::Command { command, .. } => command[0].as_str(),
+            Self::Run { name, .. } => name.as_str(),
+        }
+    }
+}
+
+pub fn find_action(project: &Project, secure: bool) -> Option<Result<Init>> {
     let init = find_init_definition(project)?;
     let config = load_definition(secure, &init).with_context(|| {
         format!(
@@ -29,7 +63,7 @@ pub fn find_action(project: &Project, secure: bool) -> Option<Result<Action>> {
     Some(config.and_then(|c| validate_config(project, c)))
 }
 
-fn find_init_definition(project: &Project) -> Option<Init> {
+fn find_init_definition(project: &Project) -> Option<InitFile> {
     const CONFIG_FILES: [&str; 4] = [
         concat!(".", env!("CARGO_PKG_NAME"), ".toml"),
         concat!(env!("CARGO_PKG_NAME"), ".toml"),
@@ -51,7 +85,7 @@ fn find_init_definition(project: &Project) -> Option<Init> {
             })?;
 
         trace!(kind = ?kind, path = %path.display(), "Found sessionizer init file");
-        Some(Init {
+        Some(InitFile {
             file,
             path,
             kind,
@@ -60,7 +94,7 @@ fn find_init_definition(project: &Project) -> Option<Init> {
     })
 }
 
-fn load_definition(secure: bool, init: &Init) -> Result<Config> {
+fn load_definition(secure: bool, init: &InitFile) -> Result<Config> {
     if secure {
         let check = check_permissions(init.kind, &init.metadata);
 
@@ -121,7 +155,7 @@ fn create_init_file_config(init_file: &str) -> Config {
     }
 }
 
-fn validate_config(project: &Project, config: Config) -> Result<Action> {
+fn validate_config(project: &Project, config: Config) -> Result<Init> {
     let run = config
         .run
         .into_iter()
@@ -204,7 +238,7 @@ fn validate_config(project: &Project, config: Config) -> Result<Action> {
 
     let env = config.env.into_iter().collect();
 
-    let action = Action { env, run, windows };
+    let action = Init { env, run, windows };
     Ok(action)
 }
 
@@ -243,7 +277,7 @@ enum Kind {
 }
 
 #[derive(Debug)]
-struct Init {
+struct InitFile {
     file: &'static str,
     path: PathBuf,
     kind: Kind,

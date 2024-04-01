@@ -5,9 +5,7 @@ use std::{
 
 use ignore::{DirEntry, WalkBuilder, WalkState};
 
-use crate::entry::{Entry, Project};
-
-use super::{warn, Result};
+use crate::{warn, Entry, Project, Result};
 
 pub fn find_projects(home: &Path, tx: &SyncSender<Entry>) {
     let w = WalkBuilder::new(home.join("dev"))

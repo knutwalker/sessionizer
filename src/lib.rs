@@ -13,8 +13,11 @@ use kommandozeile::{
 use panic_message::panic_message;
 
 pub use crate::args::Args;
+
 use crate::{
-    entry::Entry,
+    action::Action,
+    entry::{Entry, Project, TmuxSession},
+    init::{Init, WindowCommand},
     project::find_projects,
     selection::{prompt_user, Selection},
 };
@@ -55,7 +58,7 @@ pub fn run(args: &Args) -> Result<()> {
         query: args.query(),
         color: args.use_color,
     })
-    .and_then(|e| e.map(|e| apply_entry(&e, !args.insecure)).transpose())?
+    .and_then(|e| e.map(|e| apply_entry(e, !args.insecure)).transpose())?
     else {
         return Ok(());
     };
@@ -93,14 +96,22 @@ fn find_tmux_sessions(tx: SyncSender<Entry>) -> Thread<()> {
     Thread::new("tmux ls", thread)
 }
 
-fn apply_entry(entry: &Entry, secure: bool) -> Result<Command> {
+fn apply_entry(entry: Entry, secure: bool) -> Result<Command> {
     let action = match entry {
-        Entry::Project(project) => init::find_action(project, secure).transpose()?,
-        Entry::Session(_) => None,
-    }
-    .unwrap_or_default();
+        Entry::Project(project) => {
+            let on_init = init::find_action(&project, secure)
+                .transpose()?
+                .unwrap_or_default();
+            Action::Create {
+                name: project.name,
+                root: project.root,
+                on_init,
+            }
+        }
+        Entry::Session(session) => Action::Attach { name: session.name },
+    };
 
-    Ok(action::cmd(entry, action))
+    Ok(action::cmd(&action))
 }
 
 struct Thread<T> {

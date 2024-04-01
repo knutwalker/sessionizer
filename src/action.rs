@@ -1,118 +1,480 @@
 use std::{path::PathBuf, process::Command};
 
-use crate::entry::Entry;
-
-use super::debug;
-#[derive(Debug, Clone, Default)]
-pub struct Action {
-    pub env: Vec<(String, String)>,
-    pub run: Vec<String>,
-    pub windows: Vec<SpawnWindow>,
-}
+use crate::{debug, Init, WindowCommand};
 
 #[derive(Debug, Clone)]
-pub struct SpawnWindow {
-    pub name: String,
-    pub dir: Option<PathBuf>,
-    pub command: Option<WindowCommand>,
-}
-
-#[derive(Debug, Clone)]
-pub enum WindowCommand {
-    /// A command takes over the window. Only that command is run
-    /// and the window is closed when the command exits (depending
-    /// on the tmux configuration).
-    /// If remain is set to Some(true) or tmux is configured to set
-    /// remain-on-exit to on, the window will remain open after the
-    /// command exits.
-    Command {
-        command: Vec<String>,
-        remain: Option<bool>,
+pub enum Action {
+    Attach {
+        name: String,
     },
-    /// Running a command as if it was typed in the window.
-    Run { run: String, name: String },
+    Create {
+        name: String,
+        root: PathBuf,
+        on_init: Init,
+    },
 }
 
-impl WindowCommand {
-    pub fn first(&self) -> &str {
-        match self {
-            Self::Command { command, .. } => command[0].as_str(),
-            Self::Run { name, .. } => name.as_str(),
-        }
-    }
+pub fn cmd(action: &Action) -> Command {
+    build_command(action, std::env::var_os("TMUX").is_some())
 }
 
-pub fn cmd(entry: &Entry, action: Action) -> Command {
+fn build_command(action: &Action, inside_tmux: bool) -> Command {
     debug!(?action, "Running action on a new session");
 
     let mut cmd = Command::new("tmux");
-    if let Entry::Project(project) = entry {
-        let cmd = cmd
-            .args(["new-session", "-d", "-s", &project.name, "-c"])
-            .arg(&project.root);
 
-        for (key, value) in action
-            .env
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .chain(project.root.to_str().map(|r| ("SESSION_ROOT", r)))
-            .chain(Some(("SESSION_NAME", project.name.as_str())))
-        {
-            let _ = cmd.arg("-e").arg(format!("{key}={value}"));
+    match action {
+        Action::Attach { name } => {
+            let session_id = format!("={name}");
+
+            let _ = if inside_tmux {
+                cmd.args(["switch-client", "-t", &session_id])
+            } else {
+                cmd.args(["attach-session", "-t", &session_id])
+            };
         }
+        Action::Create {
+            name,
+            root,
+            on_init,
+        } => {
+            let cmd = cmd.args(["new-session", "-d", "-s", &name, "-c"]).arg(root);
 
-        let _ = cmd.arg(";");
-    }
+            for (key, value) in root
+                .to_str()
+                .map(|r| ("SESSION_ROOT", r))
+                .into_iter()
+                .chain([("SESSION_NAME", name.as_str())])
+                .chain(on_init.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            {
+                let _ = cmd.arg("-e").arg(format!("{key}={value}"));
+            }
 
-    let tmux_attach = if std::env::var_os("TMUX").is_some() {
-        "switch-client"
-    } else {
-        "attach-session"
+            let _ = cmd.arg(";");
+            let session_id = format!("={name}");
+
+            let _ = if inside_tmux {
+                cmd.args(["switch-client", "-t", &session_id])
+            } else {
+                cmd.args(["attach-session", "-t", &session_id])
+            };
+
+            if !on_init.run.is_empty() {
+                let session_pane = format!("{session_id}:");
+                for run in &on_init.run {
+                    let _ = cmd.args([";", "send-keys", "-t", &session_pane, &run, "C-m"]);
+                }
+            }
+
+            for window in &on_init.windows {
+                let _ = cmd.args([";", "new-window", "-d", "-n", &window.name]);
+
+                if let Some(dir) = &window.dir {
+                    let _ = cmd.arg("-c").arg(dir);
+                }
+
+                if let Some(command) = &window.command {
+                    match command {
+                        WindowCommand::Command { command, remain } => {
+                            let _ = cmd.args(command);
+                            if let Some(remain) = *remain {
+                                let remain = if remain { "on" } else { "off" };
+                                let _ = cmd.args([
+                                    ";",
+                                    "set-option",
+                                    "-t",
+                                    &window.name,
+                                    "remain-on-exit",
+                                    remain,
+                                ]);
+                            }
+                        }
+                        WindowCommand::Run { run, .. } => {
+                            let target = format!("={name}:{}", window.name);
+                            let _ = cmd.args([";", "send-keys", "-t", &target, &run, "C-m"]);
+                        }
+                    }
+                }
+            }
+        }
     };
-
-    let session_id = format!("={}", entry.session_name());
-    run(&session_id, tmux_attach, action, &mut cmd);
 
     cmd
 }
 
-fn run(session_id: &str, attach: &str, action: Action, cmd: &mut Command) {
-    let _ = cmd.args([attach, "-t", &session_id]);
+#[cfg(test)]
+mod tests {
+    use crate::init::SpawnWindow;
 
-    if !action.run.is_empty() {
-        let session_pane = format!("{session_id}:");
-        for run in action.run {
-            let _ = cmd.args([";", "send-keys", "-t", &session_pane, &run, "C-m"]);
+    use super::*;
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn assert_cmd<const N: usize>(cmd: Command, expected: [&str; N]) {
+        assert_eq!(cmd.get_program(), "tmux");
+
+        let cmd = cmd
+            .get_args()
+            .filter_map(|arg| arg.to_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(cmd, expected.as_ref());
+    }
+
+    #[test]
+    fn new_session_from_project() {
+        let action = Action::Create {
+            name: "test".to_owned(),
+            root: PathBuf::from("/tmp"),
+            on_init: Init::default(),
+        };
+
+        for (inside_tmux, expected) in [(true, "switch-client"), (false, "attach-session")] {
+            let cmd = build_command(&action, inside_tmux);
+
+            let expected = [
+                "new-session",
+                "-d",
+                "-s",
+                "test",
+                "-c",
+                "/tmp",
+                "-e",
+                "SESSION_ROOT=/tmp",
+                "-e",
+                "SESSION_NAME=test",
+                ";",
+                expected,
+                "-t",
+                "=test",
+            ];
+
+            assert_cmd(cmd, expected);
         }
     }
 
-    for window in action.windows {
-        let _ = cmd.args([";", "new-window", "-d", "-n", &window.name]);
+    #[test]
+    fn switch_to_existing_session() {
+        let action = Action::Attach {
+            name: "test".to_owned(),
+        };
 
-        if let Some(dir) = window.dir {
-            let _ = cmd.arg("-c").arg(dir);
-        }
+        for (inside_tmux, expected) in [(true, "switch-client"), (false, "attach-session")] {
+            let cmd = build_command(&action, inside_tmux);
 
-        if let Some(command) = window.command {
-            match command {
-                WindowCommand::Command { command, remain } => {
-                    let _ = cmd.args(command);
-                    if let Some(remain) = remain {
-                        let remain = if remain { "on" } else { "off" };
-                        let _ = cmd.args([
-                            ";",
-                            "set-option",
-                            "-t",
-                            &window.name,
-                            "remain-on-exit",
-                            remain,
-                        ]);
-                    }
-                }
-                WindowCommand::Run { run, .. } => {
-                    let _ = cmd.args([";", "send-keys", "-t", &window.name, &run, "C-m"]);
-                }
-            }
+            let expected = [expected, "-t", "=test"];
+
+            assert_cmd(cmd, expected);
         }
+    }
+
+    #[test]
+    fn set_env_vars_when_creating_a_session() {
+        let action = Action::Create {
+            name: "test".to_owned(),
+            root: PathBuf::from("/tmp"),
+            on_init: Init {
+                env: vec![("FOO".to_owned(), "bar".to_owned())],
+                ..Default::default()
+            },
+        };
+
+        let cmd = build_command(&action, true);
+
+        let expected = [
+            "new-session",
+            "-d",
+            "-s",
+            "test",
+            "-c",
+            "/tmp",
+            "-e",
+            "SESSION_ROOT=/tmp",
+            "-e",
+            "SESSION_NAME=test",
+            "-e",
+            "FOO=bar",
+            ";",
+            "switch-client",
+            "-t",
+            "=test",
+        ];
+
+        assert_cmd(cmd, expected);
+    }
+
+    #[test]
+    fn run_commands_in_main_window_when_creating_a_session() {
+        let action = Action::Create {
+            name: "test".to_owned(),
+            root: PathBuf::from("/tmp"),
+            on_init: Init {
+                run: vec!["echo 'hello'".to_owned()],
+                ..Default::default()
+            },
+        };
+
+        let cmd = build_command(&action, true);
+
+        let expected = [
+            "new-session",
+            "-d",
+            "-s",
+            "test",
+            "-c",
+            "/tmp",
+            "-e",
+            "SESSION_ROOT=/tmp",
+            "-e",
+            "SESSION_NAME=test",
+            ";",
+            "switch-client",
+            "-t",
+            "=test",
+            ";",
+            "send-keys",
+            "-t",
+            "=test:",
+            "echo 'hello'",
+            "C-m",
+        ];
+
+        assert_cmd(cmd, expected);
+    }
+
+    #[test]
+    fn create_windows_plain() {
+        let action = Action::Create {
+            name: "test".to_owned(),
+            root: PathBuf::from("/tmp"),
+            on_init: Init {
+                windows: vec![SpawnWindow {
+                    name: "foo".to_owned(),
+                    dir: None,
+                    command: None,
+                }],
+                ..Default::default()
+            },
+        };
+
+        let cmd = build_command(&action, true);
+
+        let expected = [
+            "new-session",
+            "-d",
+            "-s",
+            "test",
+            "-c",
+            "/tmp",
+            "-e",
+            "SESSION_ROOT=/tmp",
+            "-e",
+            "SESSION_NAME=test",
+            ";",
+            "switch-client",
+            "-t",
+            "=test",
+            ";",
+            "new-window",
+            "-d",
+            "-n",
+            "foo",
+        ];
+
+        assert_cmd(cmd, expected);
+    }
+
+    #[test]
+    fn create_windows_with_dir() {
+        let action = Action::Create {
+            name: "test".to_owned(),
+            root: PathBuf::from("/tmp"),
+            on_init: Init {
+                windows: vec![SpawnWindow {
+                    name: "bar".to_owned(),
+                    dir: Some("/tmp/bar".into()),
+                    command: None,
+                }],
+                ..Default::default()
+            },
+        };
+
+        let cmd = build_command(&action, true);
+
+        let expected = [
+            "new-session",
+            "-d",
+            "-s",
+            "test",
+            "-c",
+            "/tmp",
+            "-e",
+            "SESSION_ROOT=/tmp",
+            "-e",
+            "SESSION_NAME=test",
+            ";",
+            "switch-client",
+            "-t",
+            "=test",
+            ";",
+            "new-window",
+            "-d",
+            "-n",
+            "bar",
+            "-c",
+            "/tmp/bar",
+        ];
+
+        assert_cmd(cmd, expected);
+    }
+
+    #[test]
+    fn create_windows_with_inline_run() {
+        let action = Action::Create {
+            name: "test".to_owned(),
+            root: PathBuf::from("/tmp"),
+            on_init: Init {
+                windows: vec![SpawnWindow {
+                    name: "baz".to_owned(),
+                    dir: None,
+                    command: Some(WindowCommand::Run {
+                        run: "echo 'baz'".to_owned(),
+                        name: "echo".to_owned(),
+                    }),
+                }],
+                ..Default::default()
+            },
+        };
+
+        let cmd = build_command(&action, true);
+
+        let expected = [
+            "new-session",
+            "-d",
+            "-s",
+            "test",
+            "-c",
+            "/tmp",
+            "-e",
+            "SESSION_ROOT=/tmp",
+            "-e",
+            "SESSION_NAME=test",
+            ";",
+            "switch-client",
+            "-t",
+            "=test",
+            ";",
+            "new-window",
+            "-d",
+            "-n",
+            "baz",
+            ";",
+            "send-keys",
+            "-t",
+            "=test:baz",
+            "echo 'baz'",
+            "C-m",
+        ];
+
+        assert_cmd(cmd, expected);
+    }
+
+    #[test]
+    fn create_windows_with_command_and_default_remain() {
+        let action = Action::Create {
+            name: "test".to_owned(),
+            root: PathBuf::from("/tmp"),
+            on_init: Init {
+                windows: vec![SpawnWindow {
+                    name: "qux".to_owned(),
+                    dir: None,
+                    command: Some(WindowCommand::Command {
+                        command: vec!["echo".to_owned(), "'qux'".to_owned()],
+                        remain: None,
+                    }),
+                }],
+                ..Default::default()
+            },
+        };
+
+        let cmd = build_command(&action, true);
+
+        let expected = [
+            "new-session",
+            "-d",
+            "-s",
+            "test",
+            "-c",
+            "/tmp",
+            "-e",
+            "SESSION_ROOT=/tmp",
+            "-e",
+            "SESSION_NAME=test",
+            ";",
+            "switch-client",
+            "-t",
+            "=test",
+            ";",
+            "new-window",
+            "-d",
+            "-n",
+            "qux",
+            "echo",
+            "'qux'",
+        ];
+
+        assert_cmd(cmd, expected);
+    }
+
+    #[test]
+    fn create_windows_with_command_and_explicit_remain() {
+        let action = Action::Create {
+            name: "test".to_owned(),
+            root: PathBuf::from("/tmp"),
+            on_init: Init {
+                windows: vec![SpawnWindow {
+                    name: "qax".to_owned(),
+                    dir: None,
+                    command: Some(WindowCommand::Command {
+                        command: vec!["echo".to_owned(), "'qax'".to_owned()],
+                        remain: Some(true),
+                    }),
+                }],
+                ..Default::default()
+            },
+        };
+
+        let cmd = build_command(&action, true);
+
+        let expected = [
+            "new-session",
+            "-d",
+            "-s",
+            "test",
+            "-c",
+            "/tmp",
+            "-e",
+            "SESSION_ROOT=/tmp",
+            "-e",
+            "SESSION_NAME=test",
+            ";",
+            "switch-client",
+            "-t",
+            "=test",
+            ";",
+            "new-window",
+            "-d",
+            "-n",
+            "qax",
+            "echo",
+            "'qax'",
+            ";",
+            "set-option",
+            "-t",
+            "qax",
+            "remain-on-exit",
+            "on",
+        ];
+
+        assert_cmd(cmd, expected);
     }
 }

@@ -18,13 +18,6 @@ impl Entry {
         }
     }
 
-    pub fn session_name(&self) -> &str {
-        match self {
-            Self::Session(tmux) => &tmux.name,
-            Self::Project(project) => &project.name,
-        }
-    }
-
     pub fn search_content(&self) -> &str {
         match self {
             Self::Session(tmux) => &tmux.name,
