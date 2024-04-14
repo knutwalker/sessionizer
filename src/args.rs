@@ -157,8 +157,13 @@ impl Info {
     }
 }
 
-#[test]
-fn verify_cli() {
-    use clap::CommandFactory;
-    Args::command().debug_assert();
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verify_cli() {
+        use clap::CommandFactory;
+        Args::command().debug_assert();
+    }
 }

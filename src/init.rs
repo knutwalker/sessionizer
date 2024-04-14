@@ -382,6 +382,7 @@ impl<'de> Deserialize<'de> for OnExit {
 #[cfg(test)]
 mod tests {
     use indexmap::IndexMap;
+    use rstest::rstest;
 
     use super::*;
 
@@ -423,153 +424,140 @@ mod tests {
         );
     }
 
-    #[test]
-    fn run_aliases() {
-        for cmd in &["cmd", "run", "command"] {
-            let config = format!(
-                r#"
+    #[rstest]
+    fn run_aliases(#[values("cmd", "run", "command")] cmd: &str) {
+        let config = format!(
+            r#"
                     [[run]]
                     {cmd} = "echo hello"
                 "#,
-            );
+        );
 
-            let config = toml::from_str::<Config>(&config).unwrap();
-            assert_eq!(
-                config,
-                Config {
-                    run: vec![Run {
-                        command: "echo hello".to_owned()
-                    }],
-                    ..Default::default()
-                }
-            );
-        }
+        let config = toml::from_str::<Config>(&config).unwrap();
+        assert_eq!(
+            config,
+            Config {
+                run: vec![Run {
+                    command: "echo hello".to_owned()
+                }],
+                ..Default::default()
+            }
+        );
     }
 
-    #[test]
-    fn window_aliases() {
-        for window in &["window", "windows"] {
-            let config = format!(
-                r#"
+    #[rstest]
+    fn window_aliases(#[values("window", "windows")] window: &str) {
+        let config = format!(
+            r#"
                     [[{window}]]
                 "#,
-            );
+        );
 
-            let config = toml::from_str::<Config>(&config).unwrap();
-            assert_eq!(
-                config,
-                Config {
-                    windows: vec![Window::default()],
-                    ..Default::default()
-                }
-            );
-        }
+        let config = toml::from_str::<Config>(&config).unwrap();
+        assert_eq!(
+            config,
+            Config {
+                windows: vec![Window::default()],
+                ..Default::default()
+            }
+        );
     }
 
-    #[test]
-    fn window_run_aliases() {
-        for cmd in &["cmd", "run", "command"] {
-            let config = format!(
-                r#"
+    #[rstest]
+    fn window_run_aliases(#[values("cmd", "run", "command")] cmd: &str) {
+        let config = format!(
+            r#"
                     [[window]]
                     {cmd} = "echo world"
                 "#,
-            );
+        );
 
-            let config = toml::from_str::<Config>(&config).unwrap();
-            assert_eq!(
-                config,
-                Config {
-                    windows: vec![Window {
-                        command: Some("echo world".to_owned()),
-                        ..Default::default()
-                    }],
+        let config = toml::from_str::<Config>(&config).unwrap();
+        assert_eq!(
+            config,
+            Config {
+                windows: vec![Window {
+                    command: Some("echo world".to_owned()),
                     ..Default::default()
-                }
-            );
-        }
+                }],
+                ..Default::default()
+            }
+        );
     }
 
-    #[test]
-    fn window_dir_aliases() {
-        for dir in &["path", "workdir", "wd", "pwd", "cwd", "dir"] {
-            let config = format!(
-                r#"
+    #[rstest]
+    fn window_dir_aliases(#[values("path", "workdir", "wd", "pwd", "cwd", "dir")] dir: &str) {
+        let config = format!(
+            r#"
                     [[window]]
                     {dir} = "dir"
                 "#,
-            );
+        );
 
-            let config = toml::from_str::<Config>(&config).unwrap();
-            assert_eq!(
-                config,
-                Config {
-                    windows: vec![Window {
-                        dir: Some("dir".into()),
-                        ..Default::default()
-                    }],
+        let config = toml::from_str::<Config>(&config).unwrap();
+        assert_eq!(
+            config,
+            Config {
+                windows: vec![Window {
+                    dir: Some("dir".into()),
                     ..Default::default()
-                }
-            );
-        }
+                }],
+                ..Default::default()
+            }
+        );
     }
 
-    #[test]
-    fn window_on_exit_aliases() {
-        for on_exit in &["keep-alive", "remain", "on-exit"] {
-            let config = format!(
-                r#"
+    #[rstest]
+    fn window_on_exit_aliases(#[values("keep-alive", "remain", "on-exit")] on_exit: &str) {
+        let config = format!(
+            r#"
                     [[window]]
                     {on_exit} = "stay"
                 "#,
-            );
+        );
 
-            let config = toml::from_str::<Config>(&config).unwrap();
-            assert_eq!(
-                config,
-                Config {
-                    windows: vec![Window {
-                        on_exit: Some(OnExit::Shell),
-                        ..Default::default()
-                    }],
+        let config = toml::from_str::<Config>(&config).unwrap();
+        assert_eq!(
+            config,
+            Config {
+                windows: vec![Window {
+                    on_exit: Some(OnExit::Shell),
                     ..Default::default()
-                }
-            );
-        }
+                }],
+                ..Default::default()
+            }
+        );
     }
 
-    #[test]
-    fn window_on_exit_values() {
-        for (on_exit, expected) in [
-            (r#""kill""#, OnExit::Destroy),
-            (r#""destroy""#, OnExit::Destroy),
-            (r"false", OnExit::Destroy),
-            (r#""inactive""#, OnExit::Deactivate),
-            (r#""remain""#, OnExit::Deactivate),
-            (r#""deactivate""#, OnExit::Deactivate),
-            (r#""stay""#, OnExit::Shell),
-            (r#""keep""#, OnExit::Shell),
-            (r#""shell""#, OnExit::Shell),
-            (r"true", OnExit::Shell),
-        ] {
-            let config = format!(
-                r#"
+    #[rstest]
+    #[case(r#""kill""#, OnExit::Destroy)]
+    #[case(r#""destroy""#, OnExit::Destroy)]
+    #[case(r"false", OnExit::Destroy)]
+    #[case(r#""inactive""#, OnExit::Deactivate)]
+    #[case(r#""remain""#, OnExit::Deactivate)]
+    #[case(r#""deactivate""#, OnExit::Deactivate)]
+    #[case(r#""stay""#, OnExit::Shell)]
+    #[case(r#""keep""#, OnExit::Shell)]
+    #[case(r#""shell""#, OnExit::Shell)]
+    #[case(r"true", OnExit::Shell)]
+    fn window_on_exit_values(#[case] on_exit: &str, #[case] expected: OnExit) {
+        let config = format!(
+            r#"
                     [[window]]
                     on-exit = {on_exit}
                 "#,
-            );
+        );
 
-            let config = toml::from_str::<Config>(&config).unwrap();
-            assert_eq!(
-                config,
-                Config {
-                    windows: vec![Window {
-                        on_exit: Some(expected),
-                        ..Default::default()
-                    }],
+        let config = toml::from_str::<Config>(&config).unwrap();
+        assert_eq!(
+            config,
+            Config {
+                windows: vec![Window {
+                    on_exit: Some(expected),
                     ..Default::default()
-                }
-            );
-        }
+                }],
+                ..Default::default()
+            }
+        );
     }
 }

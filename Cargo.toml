@@ -92,3 +92,6 @@ cargo = "warn"
 pedantic = "warn"
 nursery = "warn"
 multiple_crate_versions = { level = "allow", priority = 1 }
+
+[dev-dependencies]
+rstest = "0.19.0"

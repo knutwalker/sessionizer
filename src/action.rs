@@ -104,6 +104,8 @@ fn build_command(action: &Action, inside_tmux: bool) -> Command {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use crate::init::SpawnWindow;
 
     use super::*;
@@ -152,19 +154,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn switch_to_existing_session() {
+    #[rstest]
+    fn switch_to_existing_session(#[values(true, false)] inside_tmux: bool) {
         let action = Action::Attach {
             name: "test".to_owned(),
         };
 
-        for (inside_tmux, expected) in [(true, "switch-client"), (false, "attach-session")] {
-            let cmd = build_command(&action, inside_tmux);
+        let cmd = build_command(&action, inside_tmux);
 
-            let expected = [expected, "-t", "=test"];
+        let expected = if inside_tmux {
+            "switch-client"
+        } else {
+            "attach-session"
+        };
+        let expected = [expected, "-t", "=test"];
 
-            assert_cmd(cmd, expected);
-        }
+        assert_cmd(cmd, expected);
     }
 
     #[test]
@@ -425,8 +430,8 @@ mod tests {
         assert_cmd(cmd, expected);
     }
 
-    #[test]
-    fn create_windows_with_command_and_explicit_remain() {
+    #[rstest]
+    fn create_windows_with_command_and_explicit_remain(#[values(true, false)] remain: bool) {
         let action = Action::Create {
             name: "test".to_owned(),
             root: PathBuf::from("/tmp"),
@@ -436,7 +441,7 @@ mod tests {
                     dir: None,
                     command: Some(WindowCommand::Command {
                         command: vec!["echo".to_owned(), "'qax'".to_owned()],
-                        remain: Some(true),
+                        remain: Some(remain),
                     }),
                 }],
                 ..Default::default()
@@ -445,6 +450,7 @@ mod tests {
 
         let cmd = build_command(&action, true);
 
+        let expected = if remain { "on" } else { "off" };
         let expected = [
             "new-session",
             "-d",
@@ -472,7 +478,7 @@ mod tests {
             "-t",
             "qax",
             "remain-on-exit",
-            "on",
+            expected,
         ];
 
         assert_cmd(cmd, expected);
