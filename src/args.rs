@@ -22,17 +22,17 @@ pub struct Args {
 
     /// Don't switch, just print the final tmux command.
     #[clap(long, short = 'n')]
-    pub(crate) dry_run: bool,
+    pub dry_run: bool,
 
     /// Skip initialization file permission checks.
     #[clap(long)]
-    pub(crate) insecure: bool,
+    pub insecure: bool,
 
     #[clap(flatten)]
-    pub(crate) selection: Selection,
+    pub selection: Selection,
 
     #[clap(trailing_var_arg = true)]
-    query: Vec<String>,
+    pub query: Vec<String>,
 
     #[clap(skip)]
     pub(crate) use_color: bool,

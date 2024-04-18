@@ -12,7 +12,7 @@ use kommandozeile::{
 };
 use panic_message::panic_message;
 
-pub use crate::args::Args;
+pub use crate::args::{Args, Selection as SelectionArgs};
 
 use crate::{
     action::Action,
