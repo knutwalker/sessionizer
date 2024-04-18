@@ -1,8 +1,11 @@
 use std::{fmt::Display, iter, sync::OnceLock};
 
 use kommandozeile::{
-    clap, color_eyre::ErrorKind, concolor, pkg_name, setup_clap, setup_color_eyre_builder,
-    tracing::debug, verbosity_filter, Color, Global, Verbose,
+    clap::{self, ValueEnum},
+    color_eyre::ErrorKind,
+    concolor, pkg_name, setup_clap, setup_color_eyre_builder,
+    tracing::debug,
+    verbosity_filter, Color, Global, Verbose,
 };
 
 use crate::init::InitError;
@@ -11,6 +14,7 @@ use crate::init::InitError;
 #[non_exhaustive]
 pub enum Action {
     Search(Search),
+    Config(Config),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -50,6 +54,14 @@ impl Scope {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Config {
+    Init,
+    Validate { insecure: bool },
+    Edit { insecure: bool },
+}
+
 impl Action {
     #[must_use]
     pub fn cli() -> Self {
@@ -71,19 +83,31 @@ impl Action {
     }
 
     fn from_args(args: Args, use_color: bool) -> Self {
-        let search = args.command.search;
-        let scope = match (search.selection.tmux_only, search.selection.projects_only) {
-            (true, _) => Scope::TmuxOnly,
-            (_, true) => Scope::ProjectsOnly,
-            _ => Scope::Both,
-        };
-        Self::Search(Search {
-            dry_run: search.dry_run,
-            insecure: search.insecure,
-            use_color,
-            scope,
-            query: Some(search.query.join(" ")).filter(|s| !s.is_empty()),
-        })
+        match (args.command.search, args.command.config) {
+            (search, None) => {
+                let scope = match (search.selection.tmux_only, search.selection.projects_only) {
+                    (true, _) => Scope::TmuxOnly,
+                    (_, true) => Scope::ProjectsOnly,
+                    _ => Scope::Both,
+                };
+                Self::Search(Search {
+                    dry_run: search.dry_run,
+                    insecure: search.insecure,
+                    use_color,
+                    scope,
+                    query: Some(search.query.join(" ")).filter(|s| !s.is_empty()),
+                })
+            }
+            (search, Some(config)) => Self::Config(match config {
+                ConfigCmd::Init => Config::Init,
+                ConfigCmd::Validate => Config::Validate {
+                    insecure: search.insecure,
+                },
+                ConfigCmd::Edit => Config::Edit {
+                    insecure: search.insecure,
+                },
+            }),
+        }
     }
 }
 
@@ -156,16 +180,19 @@ impl Args {
 }
 
 #[derive(Clone, Debug, clap::Args)]
-#[group(multiple = false)]
 struct Cmd {
     #[clap(flatten)]
     search: SearchCmd,
+
+    #[clap(long, short, value_name = "COMMAND", conflicts_with = "search")]
+    config: Option<ConfigCmd>,
 }
 
-#[derive(Clone, Debug, clap::Args)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, clap::Args)]
+#[group(id = "search")]
 struct SearchCmd {
     /// Don't switch, just print the final tmux command.
-    #[clap(long, short = 'n')]
+    #[clap(long, short = 'n', conflicts_with = "config")]
     dry_run: bool,
 
     /// Skip initialization file permission checks.
@@ -175,19 +202,36 @@ struct SearchCmd {
     #[clap(flatten)]
     selection: Selection,
 
-    #[clap(trailing_var_arg = true)]
+    #[clap(trailing_var_arg = true, conflicts_with = "config")]
     query: Vec<String>,
 }
 
-#[derive(Copy, Clone, Debug, clap::Args)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum ConfigCmd {
+    #[clap(alias = "i")]
+    #[clap(alias = "new")]
+    #[clap(alias = "n")]
+    /// Create a new sessionizer configuration for this directory
+    Init,
+    #[clap(alias = "v")]
+    #[clap(alias = "check")]
+    #[clap(alias = "c")]
+    /// Validate the sessionizer config in this directory
+    Validate,
+    #[clap(alias = "e")]
+    /// Open the sessionizer config for this directory in $VISUAL | $EDITOR
+    Edit,
+}
+
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::Args)]
 #[group(multiple = false)]
 struct Selection {
     /// Only include running tmux sessions.
-    #[clap(long, short = 't')]
+    #[clap(long, short = 't', conflicts_with = "config")]
     tmux_only: bool,
 
     /// Only include project directories.
-    #[clap(long, short = 'p')]
+    #[clap(long, short = 'p', conflicts_with = "config")]
     projects_only: bool,
 }
 
@@ -262,7 +306,9 @@ mod tests {
 
     fn parse_search<const N: usize>(args: [&str; N]) -> Search {
         let action = Action::from_flags(args);
-        let Action::Search(search) = action;
+        let Action::Search(search) = action else {
+            panic!("not a search")
+        };
         search
     }
 
@@ -353,6 +399,122 @@ mod tests {
                 scope: Scope::TmuxOnly,
                 query: Some("foo bar".into())
             }
+        );
+    }
+
+    fn parse_config<const N: usize>(args: [&str; N]) -> Config {
+        let action = Action::from_flags(args);
+        let Action::Config(config) = action else {
+            panic!("not a config")
+        };
+        config
+    }
+
+    macro_rules! assert_config {
+        ($flags:expr, $config:expr) => {
+            let action = parse_config($flags);
+            assert_eq!(action, $config);
+        };
+    }
+
+    #[test]
+    fn config_init() {
+        assert_config!(["--config", "init"], Config::Init);
+        assert_config!(["-c", "init"], Config::Init);
+        assert_config!(["--config=init"], Config::Init);
+        assert_config!(["--config", "i"], Config::Init);
+        assert_config!(["--config", "new"], Config::Init);
+        assert_config!(["--config", "n"], Config::Init);
+    }
+
+    #[test]
+    fn config_validate() {
+        assert_config!(
+            ["--config", "validate"],
+            Config::Validate { insecure: false }
+        );
+        assert_config!(["-c", "validate"], Config::Validate { insecure: false });
+        assert_config!(["--config=validate"], Config::Validate { insecure: false });
+        assert_config!(["--config", "v"], Config::Validate { insecure: false });
+        assert_config!(["--config", "check"], Config::Validate { insecure: false });
+        assert_config!(["--config", "c"], Config::Validate { insecure: false });
+    }
+
+    #[test]
+    fn config_edit() {
+        assert_config!(["--config", "edit"], Config::Edit { insecure: false });
+        assert_config!(["-c", "edit"], Config::Edit { insecure: false });
+        assert_config!(["--config=edit"], Config::Edit { insecure: false });
+        assert_config!(["--config", "e"], Config::Edit { insecure: false });
+    }
+
+    #[test]
+    fn search_and_config_are_mutually_exclusive() {
+        let err = Action::try_from_flags(["--dry-run", "--config", "new"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+        assert_eq!(
+            err.get(ContextKind::InvalidArg),
+            Some(&ContextValue::String("--dry-run".into()))
+        );
+        assert_eq!(
+            err.get(ContextKind::PriorArg),
+            Some(&ContextValue::String("--config <COMMAND>".into()))
+        );
+    }
+
+    #[test]
+    fn insecure_and_config_together_are_allowed() {
+        assert_config!(
+            ["--insecure", "--config", "edit"],
+            Config::Edit { insecure: true }
+        );
+        assert_config!(
+            ["--config", "edit", "--insecure"],
+            Config::Edit { insecure: true }
+        );
+    }
+
+    #[test]
+    fn config_requires_command() {
+        let err = Action::try_from_flags(["--config"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+        assert_eq!(
+            err.get(ContextKind::InvalidArg),
+            Some(&ContextValue::String("--config <COMMAND>".into()))
+        );
+        assert_eq!(
+            err.get(ContextKind::InvalidValue),
+            Some(&ContextValue::String(String::new()))
+        );
+        assert_eq!(
+            err.get(ContextKind::ValidValue),
+            Some(&ContextValue::Strings(vec![
+                "init".into(),
+                "validate".into(),
+                "edit".into()
+            ]))
+        );
+    }
+
+    #[test]
+    fn config_requires_valid_command() {
+        let err = Action::try_from_flags(["--config", "frobnicate"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+        assert_eq!(
+            err.get(ContextKind::InvalidArg),
+            Some(&ContextValue::String("--config <COMMAND>".into()))
+        );
+        assert_eq!(
+            err.get(ContextKind::InvalidValue),
+            Some(&ContextValue::String("frobnicate".into()))
+        );
+        assert_eq!(
+            err.get(ContextKind::ValidValue),
+            Some(&ContextValue::Strings(vec![
+                "init".into(),
+                "validate".into(),
+                "edit".into()
+            ]))
         );
     }
 }

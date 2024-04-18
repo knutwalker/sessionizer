@@ -1,17 +1,23 @@
 use std::{
-    env, fmt,
-    fs::{self, Metadata},
-    io,
-    os::unix::fs::MetadataExt as _,
+    env,
+    ffi::OsStr,
+    fmt::{self, Display},
+    fs::{self, Metadata, OpenOptions, Permissions},
+    io::{self, Write as _},
+    os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _},
     path::{Path, PathBuf},
+    process::Command,
 };
 
+use inquire::Select;
 use kommandozeile::color_eyre::{
     eyre::{eyre, Context as _},
+    owo_colors::OwoColorize as _,
     Section as _, SectionExt as _,
 };
 use onlyerror::Error;
 use serde::{Deserialize, Deserializer};
+use tempfile::NamedTempFile;
 
 use crate::{debug, trace, Result};
 
@@ -67,6 +73,18 @@ pub enum InitError {
     FileReading(#[source] io::Error),
     #[error("Error while parsing the file")]
     FileParsing(#[source] toml::de::Error, String),
+    #[error("The current working directory does not exist or cannot be accessed")]
+    InvalidCwd(#[source] io::Error),
+    #[error("Cannot create a new sessionizer config file")]
+    CreateConfigFile(#[source] io::Error),
+    #[error("No sessionizer config file found")]
+    NoConfigFile,
+    #[error("No editor found")]
+    NoEditor,
+    #[error("Error while preparing the config file for editing")]
+    PrepareEditing(#[source] io::Error),
+    #[error("Editor command did not return success")]
+    Editing,
     #[error("Command cannot be empty")]
     EmptyCommand,
     #[error("Command contains a semicolon")]
@@ -79,10 +97,190 @@ pub enum InitError {
     InvalidWindowDir(#[source] io::Error),
 }
 
+pub fn create_config_file() -> Result<(), InitError> {
+    let cwd = env::current_dir().map_err(InitError::InvalidCwd)?;
+    write_empty_config_in(&cwd)
+}
+
+pub fn edit_config_file(secure: bool) -> Result<()> {
+    let cwd = env::current_dir().map_err(InitError::InvalidCwd)?;
+    edit_config_file_in(&cwd, secure)
+}
+
+pub fn validate_config_file(secure: bool) -> Result<()> {
+    let cwd = env::current_dir().map_err(InitError::InvalidCwd)?;
+    validate_config_file_in(&cwd, secure)
+}
+
+fn write_empty_config_in(dir: &Path) -> Result<(), InitError> {
+    const INIT_FILE: &str = concat!(".", env!("CARGO_PKG_NAME"), ".toml");
+
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(dir.join(INIT_FILE))
+        .map_err(InitError::CreateConfigFile)?;
+
+    let content = include_bytes!("./empty-config.toml");
+    file.write_all(content)
+        .map_err(InitError::CreateConfigFile)?;
+
+    file.flush().map_err(InitError::CreateConfigFile)?;
+    drop(file);
+
+    Ok(())
+}
+
 pub fn find_action(dir: &Path, secure: bool) -> Option<Result<Init>> {
     let init = find_init_definition(dir)?;
     let init = validated_init_file(dir, secure, &init);
     Some(init)
+}
+
+fn validate_config_file_in(dir: &Path, secure: bool) -> Result<()> {
+    let _ = find_action(dir, secure)
+        .ok_or(InitError::NoConfigFile)
+        .suggestion(concat!(
+            "Run `",
+            env!("CARGO_PKG_NAME"),
+            " --config init` to create an empty config"
+        ))??;
+
+    Ok(())
+}
+
+fn edit_config_file_in(dir: &Path, secure: bool) -> Result<()> {
+    let file = find_init_definition(dir)
+        .ok_or(InitError::NoConfigFile)
+        .suggestion(concat!(
+            "Run `",
+            env!("CARGO_PKG_NAME"),
+            " --config init` to create an empty config"
+        ))?;
+
+    let editor = env::var_os("VISUAL")
+        .or_else(|| env::var_os("EDITOR"))
+        .ok_or(InitError::NoEditor)
+        .suggestion("Define either $VISUAL or $EDITOR")?;
+
+    let tmp = copy_config_file_to_tmp(dir, &file.path).map_err(InitError::PrepareEditing)?;
+
+    let valid = edit_tmp_config_file(tmp.path(), &editor, &file, dir)?;
+    if valid {
+        let mut tmp = tmp
+            .persist(file.path)
+            .map_err(|e| InitError::PrepareEditing(e.error))?;
+        tmp.flush().map_err(InitError::PrepareEditing)?;
+        drop(tmp);
+
+        validate_config_file_in(dir, secure)?;
+    }
+
+    Ok(())
+}
+
+fn copy_config_file_to_tmp(dir: &Path, file: &Path) -> Result<NamedTempFile, io::Error> {
+    let content = fs::read(file)?;
+
+    let mut tmp = tempfile::Builder::new()
+        .permissions(Permissions::from_mode(0o600))
+        .tempfile_in(dir)?;
+    tmp.write_all(&content)?;
+    tmp.flush()?;
+
+    Ok(tmp)
+}
+
+fn edit_tmp_config_file(path: &Path, editor: &OsStr, init: &InitFile, dir: &Path) -> Result<bool> {
+    enum Choices {
+        EditAgain,
+        ExitWithoutSaving,
+    }
+
+    impl Display for Choices {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                Self::EditAgain => f.write_str("Edit the file again"),
+                Self::ExitWithoutSaving => f.write_str("Exit without saving changes"),
+            }
+        }
+    }
+
+    'editing: loop {
+        let mut cmd = Command::new(editor);
+        let _ = cmd.arg(path);
+        trace!(?cmd, "Running editor");
+
+        let s = cmd.status().map_err(InitError::PrepareEditing)?;
+        if !s.success() {
+            return Err(eyre!(InitError::Editing));
+        }
+
+        let tmp_file = InitFile {
+            path: path.to_path_buf(),
+            file: init.file,
+            kind: init.kind,
+            metadata: init.metadata.clone(),
+        };
+
+        match validated_init_file(dir, false, &tmp_file) {
+            Ok(_) => return Ok(true),
+            Err(e) => {
+                debug!(%e, "Config validation failed");
+
+                eprintln!();
+                eprintln!("New config did not validate");
+                eprintln!();
+
+                if let Some(InitError::FileParsing(toml_error, _content)) =
+                    e.downcast_ref::<InitError>()
+                {
+                    eprintln!("{}", toml_error.bright_red());
+                } else {
+                    eprintln!("{e:?}");
+                };
+
+                eprintln!();
+
+                let mut esc_count = 0;
+
+                'selection: loop {
+                    let sel = Select::new(
+                        "What now?\n",
+                        vec![Choices::EditAgain, Choices::ExitWithoutSaving],
+                    )
+                    .with_vim_mode(true)
+                    .without_filtering()
+                    .without_help_message();
+
+                    let sel = match esc_count {
+                        4 => sel.with_help_message(
+                            "↑↓/jk to move, enter to select, ESC to exit without saving",
+                        ),
+                        3 => sel.with_help_message(
+                            "↑↓/jk to move, enter to select, ESC+ESC to exit without saving",
+                        ),
+                        1..=2 => sel.with_help_message("↑↓/jk to move, enter to select"),
+                        _ => sel,
+                    };
+
+                    match sel.prompt() {
+                        Ok(Choices::EditAgain) => continue 'editing,
+                        Err(inquire::InquireError::OperationCanceled) => {
+                            esc_count += 1;
+                            if esc_count >= 5 {
+                                return Ok(false);
+                            }
+                            continue 'selection;
+                        }
+                        Ok(Choices::ExitWithoutSaving) => return Ok(false),
+                        Err(e) => return Err(eyre!(InitError::Editing)).context(e),
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn validated_init_file(dir: &Path, secure: bool, init: &InitFile) -> Result<Init> {
