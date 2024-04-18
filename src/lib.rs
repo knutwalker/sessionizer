@@ -12,7 +12,7 @@ use kommandozeile::{
 };
 use panic_message::panic_message;
 
-pub use crate::args::{Args, Selection as SelectionArgs};
+pub use crate::args::{Action as CliAction, Scope, Search};
 
 use crate::{
     action::Action,
@@ -34,14 +34,29 @@ mod session;
 ///
 /// # Errors
 /// Since this is the main entry, all possible errors are returned as [`color_eyre::Result`].
-pub fn run(args: &Args) -> Result<()> {
+pub fn run(action: CliAction) -> Result<()> {
+    match action {
+        CliAction::Search(args) => run_search(args),
+        _ => todo!(),
+    }
+}
+
+fn run_search(
+    Search {
+        dry_run,
+        insecure,
+        use_color,
+        scope,
+        query,
+    }: Search,
+) -> Result<()> {
     let home = home::home_dir().ok_or_eyre("failed to get user home directory")?;
 
     let (tx, entries) = spawn_collector();
 
-    let tmux_ls = (!args.selection.projects_only).then(|| find_tmux_sessions(tx.clone()));
+    let tmux_ls = (scope.check_tmux()).then(|| find_tmux_sessions(tx.clone()));
 
-    if !args.selection.tmux_only {
+    if scope.check_projects() {
         find_projects(&home, &tx);
     }
 
@@ -53,19 +68,22 @@ pub fn run(args: &Args) -> Result<()> {
 
     debug!("found {} entries", entries.len());
 
-    let Some(mut cmd) = prompt_user(Selection {
+    let selection = Selection {
         entries,
-        query: args.query(),
-        color: args.use_color,
-    })
-    .and_then(|e| e.map(|e| apply_entry(e, !args.insecure)).transpose())?
-    else {
+        query,
+        color: use_color,
+    };
+
+    let command =
+        prompt_user(selection).and_then(|e| e.map(|e| apply_entry(e, !insecure)).transpose())?;
+
+    let Some(mut cmd) = command else {
         return Ok(());
     };
 
     info!(?cmd);
 
-    if args.dry_run {
+    if dry_run {
         let cmd = shlex::try_join(
             std::iter::once(cmd.get_program())
                 .chain(cmd.get_args())
