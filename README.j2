@@ -9,10 +9,40 @@
 [license-badge]: https://img.shields.io/badge/license-{{ license | replace("-", "--") | urlencode }}-blue.svg?style=shield
 [rust-version-badge]: https://img.shields.io/badge/rustc-{{ rust_version | urlencode }}-orange.svg?style=shield
 
+Select a new tmux session from a list of running sessions or a selection of projects.
+
 > [!WARNING]
 > Very much a work in progress.
 > As it is, it's probably only working for me.
 > Configurability might come later.
+
+# Installation
+
+> [!IMPORTANT]
+> Windows is not supported. Using WSL might work, though it is not tested.
+
+## Via Cargo
+
+### Released version
+
+```sh
+cargo install sessionizer
+```
+
+### Development version
+
+```sh
+cargo install --git https://github.com/knutwalker/sessionizer
+```
+
+## From source
+
+```sh
+make; make install
+```
+
+These steps might have to be adapted to your environment (e.g. elevating privileges for `make install`).
+On macOS, you have to use `gmake` from homebrew.
 
 {{ readme }}
 
