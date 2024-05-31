@@ -99,7 +99,7 @@ fn run_search(
 
 fn spawn_collector() -> (SyncSender<Entry>, Thread<Vec<Entry>>) {
     let (tx, rx) = mpsc::sync_channel::<Entry>(16);
-    let thread = std::thread::spawn(move || {
+    let thread = thread::spawn(move || {
         entry::process_entries(rx.into_iter().inspect(|entry| {
             trace!(?entry);
         }))
@@ -134,11 +134,11 @@ fn apply_entry(entry: Entry, secure: bool) -> Result<Command> {
 
 struct Thread<T> {
     name: &'static str,
-    thread: std::thread::JoinHandle<T>,
+    thread: thread::JoinHandle<T>,
 }
 
 impl<T> Thread<T> {
-    const fn new(name: &'static str, thread: std::thread::JoinHandle<T>) -> Self {
+    const fn new(name: &'static str, thread: thread::JoinHandle<T>) -> Self {
         Self { name, thread }
     }
 
