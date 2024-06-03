@@ -10,10 +10,13 @@ use std::{
 };
 
 use inquire::Select;
-use kommandozeile::color_eyre::{
-    eyre::{eyre, Context as _},
-    owo_colors::OwoColorize as _,
-    Section as _, SectionExt as _,
+use kommandozeile::{
+    color_eyre::{
+        eyre::{eyre, Context as _},
+        owo_colors::OwoColorize as _,
+        Section as _, SectionExt as _,
+    },
+    tracing::info,
 };
 use onlyerror::Error;
 use serde::{Deserialize, Deserializer};
@@ -165,9 +168,18 @@ fn edit_config_file_in(dir: &Path, secure: bool) -> Result<()> {
         .suggestion("Define either $VISUAL or $EDITOR")?;
 
     let tmp = copy_config_file_to_tmp(dir, &file.path).map_err(InitError::PrepareEditing)?;
+    let last_modified = tmp.path().metadata().and_then(|m| m.modified()).ok();
 
     let valid = edit_tmp_config_file(tmp.path(), &editor, &file, dir)?;
     if valid {
+        if let Some(last_modified) = last_modified {
+            let now_modified = tmp.path().metadata().and_then(|m| m.modified()).ok();
+            if now_modified.is_some_and(|m| m <= last_modified) {
+                info!("No changes were made to the configuration file");
+                return Ok(());
+            }
+        }
+
         let mut tmp = tmp
             .persist(file.path)
             .map_err(|e| InitError::PrepareEditing(e.error))?;
