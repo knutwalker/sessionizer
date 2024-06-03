@@ -18,3 +18,5 @@
 # above and add an entry or multiple entries with the following keys:
 #
 # command = "the command to run in the main window"
+
+# vim: set ft=toml:

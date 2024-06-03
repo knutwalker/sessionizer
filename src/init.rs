@@ -185,6 +185,7 @@ fn copy_config_file_to_tmp(dir: &Path, file: &Path) -> Result<NamedTempFile, io:
 
     let mut tmp = tempfile::Builder::new()
         .permissions(Permissions::from_mode(0o600))
+        .suffix(".toml")
         .tempfile_in(dir)?;
     tmp.write_all(&content)?;
     tmp.flush()?;
