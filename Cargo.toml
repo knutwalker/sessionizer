@@ -17,6 +17,7 @@ fuzzy-select = "0.1.1"
 home = "0.5.9"
 ignore = "0.4.21"
 indexmap = { version = "2.2.2", features = ["serde"] }
+onlyerror = "0.1.4"
 panic-message = "0.3.0"
 serde = { version = "1.0.195", features = ["derive"] }
 shlex = "1.2.0"

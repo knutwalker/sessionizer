@@ -1,14 +1,16 @@
 use std::{
     env, fmt,
     fs::{self, Metadata},
+    io,
     os::unix::fs::MetadataExt as _,
     path::{Path, PathBuf},
 };
 
 use kommandozeile::color_eyre::{
     eyre::{eyre, Context as _},
-    Section as _,
+    Section as _, SectionExt as _,
 };
+use onlyerror::Error;
 use serde::{Deserialize, Deserializer};
 
 use crate::{debug, trace, Result};
@@ -52,6 +54,31 @@ impl WindowCommand {
     }
 }
 
+#[allow(clippy::module_name_repetitions)]
+#[derive(Debug, Error)]
+pub enum InitError {
+    #[error("File is not readable")]
+    FileNotReadable,
+    #[error("File can be written or executed by others")]
+    PermissionsTooOpen,
+    #[error("File is not readable or executable")]
+    FileNotReadableOrExecutable,
+    #[error("Error while reading the file")]
+    FileReading(#[source] io::Error),
+    #[error("Error while parsing the file")]
+    FileParsing(#[source] toml::de::Error, String),
+    #[error("Command cannot be empty")]
+    EmptyCommand,
+    #[error("Command contains a semicolon")]
+    MultipleCommands,
+    #[error("Failed to split command into shell arguments")]
+    CommandLexing,
+    #[error("The path is not a directory")]
+    NotADirectory,
+    #[error("Invalid window directory")]
+    InvalidWindowDir(#[source] io::Error),
+}
+
 pub fn find_action(dir: &Path, secure: bool) -> Option<Result<Init>> {
     let init = find_init_definition(dir)?;
     let init = validated_init_file(dir, secure, &init);
@@ -59,12 +86,11 @@ pub fn find_action(dir: &Path, secure: bool) -> Option<Result<Init>> {
 }
 
 fn validated_init_file(dir: &Path, secure: bool, init: &InitFile) -> Result<Init> {
-    let config = load_definition(secure, init).with_context(|| {
-        format!(
-            "Failed to load sessionizer init file: `{}`",
-            init.path.display()
-        )
-    })?;
+    let config = load_definition(secure, init).context(concat!(
+        "Failed to load ",
+        env!("CARGO_PKG_NAME"),
+        "init file"
+    ))?;
     let init = validate_config(dir, config)?;
     Ok(init)
 }
@@ -102,41 +128,46 @@ fn find_init_definition(dir: &Path) -> Option<InitFile> {
 
 fn load_definition(secure: bool, init: &InitFile) -> Result<Config> {
     if secure {
-        let check = check_permissions(init.kind, &init.metadata);
+        let err = check_permissions(init.kind, &init.metadata);
 
-        if let Err(check) = check {
-            return Err(match init.kind {
-                Kind::Toml => check.suggestion("Set the file permissions to 600"),
-                Kind::Init => check.suggestion("Set the file permissions to 700"),
-            })
-            .note("Running with `--insecure` will disable this check");
+        if let Err(err) = err {
+            let err = eyre!(err).with_section(|| format!("{}", init.path.display()).header("File"));
+
+            let err = match init.kind {
+                Kind::Toml => err.suggestion("Set the file permissions to 600"),
+                Kind::Init => err.suggestion("Set the file permissions to 700"),
+            };
+
+            return Err(err.note("Running with `--insecure` will disable this check"));
         };
     }
 
     match init.kind {
-        Kind::Toml => load_toml_config(&init.path),
+        Kind::Toml => load_toml_config(&init.path).map_err(|e| {
+            eyre!(e).with_section(|| format!("{}", init.path.display()).header("File"))
+        }),
         Kind::Init => Ok(create_init_file_config(init.file)),
     }
 }
 
-fn check_permissions(kind: Kind, md: &Metadata) -> Result<()> {
+fn check_permissions(kind: Kind, md: &Metadata) -> Result<(), InitError> {
     match kind {
         Kind::Toml => {
             let permissions = md.mode();
             if permissions & 0o400 != 0o400 {
-                return Err(eyre!("File is not readable"));
+                return Err(InitError::FileNotReadable);
             }
             if permissions & 0o033 != 0 {
-                return Err(eyre!("File can be written or executed by others"));
+                return Err(InitError::PermissionsTooOpen);
             }
         }
         Kind::Init => {
             let permissions = md.mode();
             if permissions & 0o600 != 0o600 {
-                return Err(eyre!("File is not readable or executable"));
+                return Err(InitError::FileNotReadableOrExecutable);
             }
             if permissions & 0o033 != 0 {
-                return Err(eyre!("File can be written or executed by others"));
+                return Err(InitError::PermissionsTooOpen);
             }
         }
     }
@@ -144,13 +175,13 @@ fn check_permissions(kind: Kind, md: &Metadata) -> Result<()> {
     Ok(())
 }
 
-fn load_toml_config(file: &Path) -> Result<Config> {
-    let config = fs::read_to_string(file)?;
-    let config = toml::from_str::<Config>(&config);
+fn load_toml_config(file: &Path) -> Result<Config, InitError> {
+    let config_raw = fs::read_to_string(file).map_err(InitError::FileReading)?;
+    let config = toml::from_str::<Config>(&config_raw);
 
     debug!(?config, "Parsed config from file");
 
-    Ok(config?)
+    config.map_err(|e| InitError::FileParsing(e, config_raw))
 }
 
 fn create_init_file_config(init_file: &str) -> Config {
@@ -176,70 +207,7 @@ fn validate_config(root_dir: &Path, config: Config) -> Result<Init> {
         .windows
         .into_iter()
         .enumerate()
-        .map(|(idx, window)| {
-            let command = window
-                .command
-                .map(|cmd| -> Result<_> {
-                    let command = validate_command("Window.command", idx, &cmd)?;
-                    let remain = match window.on_exit {
-                        Some(OnExit::Shell) => {
-                            return Ok(WindowCommand::Run {
-                                run: cmd,
-                                name: command
-                                    .into_iter()
-                                    .next()
-                                    .expect("validate returns a non-empty command"),
-                            });
-                        }
-                        Some(OnExit::Destroy) => Some(false),
-                        Some(OnExit::Deactivate) => Some(true),
-                        None => None,
-                    };
-                    Ok(WindowCommand::Command { command, remain })
-                })
-                .transpose()?;
-
-            let name = window
-                .name
-                .as_deref()
-                .or_else(|| command.as_ref().map(WindowCommand::first))
-                .map(str::trim)
-                .filter(|o| !o.is_empty())
-                .map_or_else(|| format!("Window[{idx}]"), ToOwned::to_owned);
-
-            let mut dir = window.dir;
-            if let Some(dir) = dir.as_mut() {
-                trace!(dir = %dir.display(), "Attemting to use dir as base for new window");
-
-                if dir.is_relative() {
-                    *dir = root_dir.join(dir.as_path());
-                }
-
-                *dir = dir
-                    .canonicalize()
-                    .with_context(|| {
-                        format!(
-                            "Window[{idx}]: Invalid window directory: `{}`",
-                            dir.display()
-                        )
-                    })
-                    .note("The path might not exist or contain non-directory segments")?;
-
-                if !dir.is_dir() {
-                    return Err(eyre!(
-                        "Window[{idx}]: Invalid window directory: `{}`",
-                        dir.display()
-                    )
-                    .note("The path is not a directory"));
-                }
-
-                trace!(dir = %dir.display(), "Using dir as base for new window");
-            }
-
-            let window = SpawnWindow { name, dir, command };
-
-            Ok(window)
-        })
+        .map(|(idx, window)| validate_config_window(root_dir, idx, window))
         .collect::<Result<_>>()?;
 
     let env = config.env.into_iter().collect();
@@ -250,30 +218,94 @@ fn validate_config(root_dir: &Path, config: Config) -> Result<Init> {
 
 fn validate_command(section: &str, idx: usize, cmd: &str) -> Result<Vec<String>> {
     if cmd.trim().is_empty() {
-        return Err(eyre!("{section}[{idx}]: Command cannot be empty")
-            .note("To run nothing, remove the `command` entry entirely"));
+        return Err(eyre!(InitError::EmptyCommand)
+            .with_section(|| format!("{section}[{idx}]").header("Location"))
+            .suggestion("To run nothing, remove the `command` entry entirely"));
     }
     if cmd.contains(';') {
-        return Err(
-            eyre!("{section}[{idx}]: Command contains a semicolon: `{cmd}`")
-                .note("Only a single command can be run.")
-                .note(concat!(
-                    "To run multiple commands, use a shell script ",
-                    "or similar and run that one instead."
-                )),
-        );
+        return Err(eyre!(InitError::MultipleCommands)
+            .with_section(|| format!("{section}[{idx}]").header("Location"))
+            .with_section(|| cmd.to_owned().header("Command"))
+            .note("Only a single command can be run.")
+            .suggestion(concat!(
+                "To run multiple commands, use a shell script ",
+                "or similar and run that one instead."
+            )));
     }
 
     let cmd = shlex::split(cmd).ok_or_else(|| {
-        eyre!("{section}[{idx}]: Failed to split command into shell arguments").note(concat!(
-            "The command might end while inside a quotation ",
-            "or right after an unescaped backslash."
-        ))
+        eyre!(InitError::CommandLexing)
+            .with_section(|| format!("{section}[{idx}]").header("Location"))
+            .with_section(|| cmd.to_owned().header("Command"))
+            .note(concat!(
+                "The command might end while inside a quotation ",
+                "or right after an unescaped backslash."
+            ))
     })?;
 
     assert!(!cmd.is_empty(), "shlex::split returned an empty command");
 
     Ok(cmd)
+}
+
+fn validate_config_window(root_dir: &Path, idx: usize, window: Window) -> Result<SpawnWindow> {
+    let command = window
+        .command
+        .map(|cmd| -> Result<_> {
+            let command = validate_command("Window.command", idx, &cmd)?;
+            let remain = match window.on_exit {
+                Some(OnExit::Shell) => {
+                    return Ok(WindowCommand::Run {
+                        run: cmd,
+                        name: command
+                            .into_iter()
+                            .next()
+                            .expect("validate returns a non-empty command"),
+                    });
+                }
+                Some(OnExit::Destroy) => Some(false),
+                Some(OnExit::Deactivate) => Some(true),
+                None => None,
+            };
+            Ok(WindowCommand::Command { command, remain })
+        })
+        .transpose()?;
+
+    let name = window
+        .name
+        .as_deref()
+        .or_else(|| command.as_ref().map(WindowCommand::first))
+        .map(str::trim)
+        .filter(|o| !o.is_empty())
+        .map_or_else(|| format!("Window[{idx}]"), ToOwned::to_owned);
+
+    let mut dir = window.dir;
+    if let Some(dir) = dir.as_mut() {
+        trace!(dir = %dir.display(), "Attemting to use dir as base for new window");
+
+        if dir.is_relative() {
+            *dir = root_dir.join(dir.as_path());
+        }
+
+        *dir = dir.canonicalize().map_err(|e| {
+            eyre!(InitError::InvalidWindowDir(e))
+                .with_section(|| format!("Window[{idx}]").header("Location"))
+                .with_section(|| dir.display().to_string().header("Directory"))
+                .note("The path might not exist or contain non-directory segments")
+        })?;
+
+        if !dir.is_dir() {
+            return Err(eyre!(InitError::NotADirectory)
+                .with_section(|| format!("Window[{idx}]").header("Location"))
+                .with_section(|| dir.display().to_string().header("Directory")));
+        }
+
+        trace!(dir = %dir.display(), "Using dir as base for new window");
+    }
+
+    let window = SpawnWindow { name, dir, command };
+
+    Ok(window)
 }
 
 #[derive(Copy, Clone, Debug)]

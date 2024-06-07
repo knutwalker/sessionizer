@@ -1,9 +1,11 @@
-use std::{fmt::Display, sync::OnceLock};
+use std::{fmt::Display, iter, sync::OnceLock};
 
 use kommandozeile::{
     clap, color_eyre::ErrorKind, concolor, pkg_name, setup_clap, setup_color_eyre_builder,
     tracing::debug, verbosity_filter, Color, Global, Verbose,
 };
+
+use crate::init::InitError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -63,7 +65,7 @@ impl Action {
     #[cfg(test)]
     fn try_from_flags<const N: usize>(args: [&str; N]) -> Result<Self, clap::Error> {
         use kommandozeile::clap::Parser as _;
-        let args = std::iter::once(env!("CARGO_PKG_NAME")).chain(args);
+        let args = iter::once(env!("CARGO_PKG_NAME")).chain(args);
         let args = Args::try_parse_from(args)?;
         Ok(Self::from_args(args, false))
     }
@@ -129,12 +131,14 @@ impl Args {
             .add_issue_metadata("cargo_profile", info.cargo_profile)
             .issue_filter(|o| match o {
                 ErrorKind::NonRecoverable(_) => true,
-                ErrorKind::Recoverable(e) => {
-                    !std::iter::successors(Some(e), |e| e.source()).any(|e| {
-                        let msg = e.to_string();
-                        msg.contains("Window[") || msg.contains("Run[")
-                    })
-                }
+                ErrorKind::Recoverable(e) => iter::successors(Some(e), |e| e.source())
+                    .find_map(|e| e.downcast_ref::<InitError>())
+                    .map_or(true, |e| {
+                        matches!(
+                            e,
+                            InitError::FileReading(_) | InitError::InvalidWindowDir(_)
+                        )
+                    }),
             })
             .install()
             .expect("failed to install color_eyre");
