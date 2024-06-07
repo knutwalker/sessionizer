@@ -258,9 +258,7 @@ mod tests {
 
     fn parse_search<const N: usize>(args: [&str; N]) -> Search {
         let action = Action::from_flags(args);
-        let Action::Search(search) = action else {
-            panic!("not a search")
-        };
+        let Action::Search(search) = action;
         search
     }
 

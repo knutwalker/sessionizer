@@ -37,7 +37,6 @@ mod session;
 pub fn run(action: CliAction) -> Result<()> {
     match action {
         CliAction::Search(args) => run_search(args),
-        _ => todo!(),
     }
 }
 
