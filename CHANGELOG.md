@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0](https://github.com/knutwalker/sessionizer/compare/0.1.6...0.2.0) - 2024-06-07
+
+### Changes
+
+- Update rstest dependency ([#20](https://github.com/knutwalker/sessionizer/pull/20))
+- Add commands for dealing with config/init files ([#17](https://github.com/knutwalker/sessionizer/pull/17))
+- Use more structured internal error types ([#19](https://github.com/knutwalker/sessionizer/pull/19))
+- Preparatory refactoring for upcoming config command ([#18](https://github.com/knutwalker/sessionizer/pull/18))
+- Restore previous public API
+- Update readme ([#15](https://github.com/knutwalker/sessionizer/pull/15))
+- Rewrite some tests with rstest
+- Refactor action to only represent possible actions
+- Update toml spec
+- Add some tests
+- Split into modules
+- Add different meaning for window.run
+- Ignore the .cargoinstalled sentinel
+
 ## [0.1.6](https://github.com/knutwalker/sessionizer/compare/0.1.5...0.1.6) - 2024-02-17
 
 ### Changes
