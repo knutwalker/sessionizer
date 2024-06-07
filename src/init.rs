@@ -220,9 +220,15 @@ fn edit_tmp_config_file(path: &Path, editor: &OsStr, init: &InitFile, dir: &Path
         }
     }
 
+    let mut line_num = None;
+
     'editing: loop {
         let mut cmd = Command::new(editor);
         let _ = cmd.arg(path);
+        if let Some(line_num) = line_num {
+            let _ = cmd.arg(format!("+{line_num}"));
+        }
+
         trace!(?cmd, "Running editor");
 
         let s = cmd.status().map_err(InitError::PrepareEditing)?;
@@ -246,12 +252,34 @@ fn edit_tmp_config_file(path: &Path, editor: &OsStr, init: &InitFile, dir: &Path
                 eprintln!("New config did not validate");
                 eprintln!();
 
-                if let Some(InitError::FileParsing(toml_error, _content)) =
+                line_num = if let Some(InitError::FileParsing(toml_error, content)) =
                     e.downcast_ref::<InitError>()
                 {
                     eprintln!("{}", toml_error.bright_red());
+                    toml_error.span().map(|span| {
+                        if content.is_empty() {
+                            return 0;
+                        }
+                        let input = content.as_bytes();
+                        let index = span.start;
+
+                        let safe_index = index.min(input.len() - 1);
+                        let index = safe_index;
+
+                        let nl = input[0..index]
+                            .iter()
+                            .rev()
+                            .enumerate()
+                            .find(|(_, b)| **b == b'\n')
+                            .map(|(nl, _)| index - nl - 1);
+                        let line_start = nl.map_or(0, |nl| nl + 1);
+
+                        let line = bytecount::count(&input[0..line_start], b'\n');
+                        line + 1
+                    })
                 } else {
                     eprintln!("{e:?}");
+                    None
                 };
 
                 eprintln!();
