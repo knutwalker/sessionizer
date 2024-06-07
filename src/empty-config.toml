@@ -1,0 +1,22 @@
+[env]
+# env vars are added to every window in this session
+# use a `KEY = "VALUE"` format
+
+# [[windows]]
+#
+# To spawn new windows, uncomment the `[[windows]]` above and add an
+# entry or multiple entries with the following keys:
+#
+# name = "the window name" # if missing, name is derived from the command
+# dir = "dir of that window, a path relative to session sir" # uses session dir if empty
+# command = "a command to run in this window" # if empty, opens a shell window
+# on-exit = "shell" # what happens when the command exists. See docs for details.
+
+# [[run]]
+#
+# To run command in the main window after creating the session, uncomment the `[[run]]`
+# above and add an entry or multiple entries with the following keys:
+#
+# command = "the command to run in the main window"
+
+# vim: set ft=toml:

@@ -16,8 +16,9 @@ pub use crate::args::{Action as CliAction, Scope, Search};
 
 use crate::{
     action::Action,
+    args::Config,
     entry::{Entry, Project, TmuxSession},
-    init::{Init, WindowCommand},
+    init::{create_config_file, edit_config_file, validate_config_file, Init, WindowCommand},
     project::find_projects,
     selection::{prompt_user, Selection},
 };
@@ -37,6 +38,9 @@ mod session;
 pub fn run(action: CliAction) -> Result<()> {
     match action {
         CliAction::Search(args) => run_search(args)?,
+        CliAction::Config(Config::Init) => create_config_file()?,
+        CliAction::Config(Config::Validate { insecure }) => validate_config_file(!insecure)?,
+        CliAction::Config(Config::Edit { insecure }) => edit_config_file(!insecure)?,
     };
 
     Ok(())

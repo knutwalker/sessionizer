@@ -13,14 +13,19 @@ categories = ["command-line-utilities"]
 keywords = ["tmux", "session", "sessionizer"]
 
 [dependencies]
+bytecount = "0.6.8"
 fuzzy-select = "0.1.1"
 home = "0.5.9"
 ignore = "0.4.21"
 indexmap = { version = "2.2.2", features = ["serde"] }
+inquire = { version = "0.7.5", default-features = false, features = [
+  "crossterm",
+] }
 onlyerror = "0.1.4"
 panic-message = "0.3.0"
 serde = { version = "1.0.195", features = ["derive"] }
 shlex = "1.2.0"
+tempfile = "3.10.1"
 toml = { version = "0.8.8", default-features = false, features = [
   "parse",
   "indexmap",
