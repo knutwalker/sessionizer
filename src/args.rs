@@ -61,7 +61,7 @@ impl Action {
     }
 
     #[cfg(test)]
-    fn try_from_flags<const N: usize>(args: [&str; N]) -> Result<Self, kommandozeile::clap::Error> {
+    fn try_from_flags<const N: usize>(args: [&str; N]) -> Result<Self, clap::Error> {
         use kommandozeile::clap::Parser as _;
         let args = std::iter::once(env!("CARGO_PKG_NAME")).chain(args);
         let args = Args::try_parse_from(args)?;
