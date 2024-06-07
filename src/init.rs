@@ -1,5 +1,5 @@
 use std::{
-    fmt,
+    env, fmt,
     fs::{self, Metadata},
     os::unix::fs::MetadataExt as _,
     path::{Path, PathBuf},
@@ -11,7 +11,7 @@ use kommandozeile::color_eyre::{
 };
 use serde::{Deserialize, Deserializer};
 
-use crate::{debug, trace, Project, Result};
+use crate::{debug, trace, Result};
 
 #[derive(Debug, Clone, Default)]
 pub struct Init {
@@ -52,18 +52,24 @@ impl WindowCommand {
     }
 }
 
-pub fn find_action(project: &Project, secure: bool) -> Option<Result<Init>> {
-    let init = find_init_definition(project)?;
-    let config = load_definition(secure, &init).with_context(|| {
-        format!(
-            "Failed to run sessionizer init file: `{}`",
-            init.path.display()
-        )
-    });
-    Some(config.and_then(|c| validate_config(project, c)))
+pub fn find_action(dir: &Path, secure: bool) -> Option<Result<Init>> {
+    let init = find_init_definition(dir)?;
+    let init = validated_init_file(dir, secure, &init);
+    Some(init)
 }
 
-fn find_init_definition(project: &Project) -> Option<InitFile> {
+fn validated_init_file(dir: &Path, secure: bool, init: &InitFile) -> Result<Init> {
+    let config = load_definition(secure, init).with_context(|| {
+        format!(
+            "Failed to load sessionizer init file: `{}`",
+            init.path.display()
+        )
+    })?;
+    let init = validate_config(dir, config)?;
+    Ok(init)
+}
+
+fn find_init_definition(dir: &Path) -> Option<InitFile> {
     const CONFIG_FILES: [&str; 4] = [
         concat!(".", env!("CARGO_PKG_NAME"), ".toml"),
         concat!(env!("CARGO_PKG_NAME"), ".toml"),
@@ -72,7 +78,7 @@ fn find_init_definition(project: &Project) -> Option<InitFile> {
     ];
 
     CONFIG_FILES.into_iter().find_map(|file| {
-        let path = project.root.join(file);
+        let path = dir.join(file);
         trace!(path = %path.display(), "Checking for sessionizer init file");
         let metadata = fs::metadata(&path).ok().filter(Metadata::is_file)?;
         let kind = path
@@ -155,7 +161,7 @@ fn create_init_file_config(init_file: &str) -> Config {
     }
 }
 
-fn validate_config(project: &Project, config: Config) -> Result<Init> {
+fn validate_config(root_dir: &Path, config: Config) -> Result<Init> {
     let run = config
         .run
         .into_iter()
@@ -206,7 +212,7 @@ fn validate_config(project: &Project, config: Config) -> Result<Init> {
                 trace!(dir = %dir.display(), "Attemting to use dir as base for new window");
 
                 if dir.is_relative() {
-                    *dir = project.root.join(dir.as_path());
+                    *dir = root_dir.join(dir.as_path());
                 }
 
                 *dir = dir
@@ -276,7 +282,7 @@ enum Kind {
     Init,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct InitFile {
     file: &'static str,
     path: PathBuf,

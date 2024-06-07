@@ -116,7 +116,7 @@ fn find_tmux_sessions(tx: SyncSender<Entry>) -> Thread<()> {
 fn apply_entry(entry: Entry, secure: bool) -> Result<Command> {
     let action = match entry {
         Entry::Project(project) => {
-            let on_init = init::find_action(&project, secure)
+            let on_init = init::find_action(&project.root, secure)
                 .transpose()?
                 .unwrap_or_default();
             Action::Create {
