@@ -16,26 +16,26 @@ Select a new tmux session from a list of running sessions or a selection of proj
 > As it is, it's probably only working for me.
 > Configurability might come later.
 
-# Installation
+## Installation
 
 > [!IMPORTANT]
 > Windows is not supported. Using WSL might work, though it is not tested.
 
-## Via Cargo
+### Via Cargo
 
-### Released version
+#### Released version
 
 ```sh
 cargo install sessionizer
 ```
 
-### Development version
+#### Development version
 
 ```sh
 cargo install --git https://github.com/knutwalker/sessionizer
 ```
 
-## From source
+### From source
 
 ```sh
 make; make install

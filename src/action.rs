@@ -38,7 +38,7 @@ fn build_command(action: &Action, inside_tmux: bool) -> Command {
             root,
             on_init,
         } => {
-            let cmd = cmd.args(["new-session", "-d", "-s", &name, "-c"]).arg(root);
+            let cmd = cmd.args(["new-session", "-d", "-s", name, "-c"]).arg(root);
 
             for (key, value) in root
                 .to_str()
@@ -62,7 +62,7 @@ fn build_command(action: &Action, inside_tmux: bool) -> Command {
             if !on_init.run.is_empty() {
                 let session_pane = format!("{session_id}:");
                 for run in &on_init.run {
-                    let _ = cmd.args([";", "send-keys", "-t", &session_pane, &run, "C-m"]);
+                    let _ = cmd.args([";", "send-keys", "-t", &session_pane, run, "C-m"]);
                 }
             }
 
@@ -91,7 +91,7 @@ fn build_command(action: &Action, inside_tmux: bool) -> Command {
                         }
                         WindowCommand::Run { run, .. } => {
                             let target = format!("={name}:{}", window.name);
-                            let _ = cmd.args([";", "send-keys", "-t", &target, &run, "C-m"]);
+                            let _ = cmd.args([";", "send-keys", "-t", &target, run, "C-m"]);
                         }
                     }
                 }

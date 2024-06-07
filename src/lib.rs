@@ -12,7 +12,7 @@ use kommandozeile::{
 };
 use panic_message::panic_message;
 
-pub use crate::args::{Args, Selection as SelectionArgs};
+pub use crate::args::{Action as CliAction, Scope, Search};
 
 use crate::{
     action::Action,
@@ -34,14 +34,28 @@ mod session;
 ///
 /// # Errors
 /// Since this is the main entry, all possible errors are returned as [`color_eyre::Result`].
-pub fn run(args: &Args) -> Result<()> {
+pub fn run(action: CliAction) -> Result<()> {
+    match action {
+        CliAction::Search(args) => run_search(args),
+    }
+}
+
+fn run_search(
+    Search {
+        dry_run,
+        insecure,
+        use_color,
+        scope,
+        query,
+    }: Search,
+) -> Result<()> {
     let home = home::home_dir().ok_or_eyre("failed to get user home directory")?;
 
     let (tx, entries) = spawn_collector();
 
-    let tmux_ls = (!args.selection.projects_only).then(|| find_tmux_sessions(tx.clone()));
+    let tmux_ls = (scope.check_tmux()).then(|| find_tmux_sessions(tx.clone()));
 
-    if !args.selection.tmux_only {
+    if scope.check_projects() {
         find_projects(&home, &tx);
     }
 
@@ -53,19 +67,22 @@ pub fn run(args: &Args) -> Result<()> {
 
     debug!("found {} entries", entries.len());
 
-    let Some(mut cmd) = prompt_user(Selection {
+    let selection = Selection {
         entries,
-        query: args.query(),
-        color: args.use_color,
-    })
-    .and_then(|e| e.map(|e| apply_entry(e, !args.insecure)).transpose())?
-    else {
+        query,
+        color: use_color,
+    };
+
+    let command =
+        prompt_user(selection).and_then(|e| e.map(|e| apply_entry(e, !insecure)).transpose())?;
+
+    let Some(mut cmd) = command else {
         return Ok(());
     };
 
     info!(?cmd);
 
-    if args.dry_run {
+    if dry_run {
         let cmd = shlex::try_join(
             std::iter::once(cmd.get_program())
                 .chain(cmd.get_args())
@@ -81,7 +98,7 @@ pub fn run(args: &Args) -> Result<()> {
 
 fn spawn_collector() -> (SyncSender<Entry>, Thread<Vec<Entry>>) {
     let (tx, rx) = mpsc::sync_channel::<Entry>(16);
-    let thread = std::thread::spawn(move || {
+    let thread = thread::spawn(move || {
         entry::process_entries(rx.into_iter().inspect(|entry| {
             trace!(?entry);
         }))
@@ -99,7 +116,7 @@ fn find_tmux_sessions(tx: SyncSender<Entry>) -> Thread<()> {
 fn apply_entry(entry: Entry, secure: bool) -> Result<Command> {
     let action = match entry {
         Entry::Project(project) => {
-            let on_init = init::find_action(&project, secure)
+            let on_init = init::find_action(&project.root, secure)
                 .transpose()?
                 .unwrap_or_default();
             Action::Create {
@@ -116,11 +133,11 @@ fn apply_entry(entry: Entry, secure: bool) -> Result<Command> {
 
 struct Thread<T> {
     name: &'static str,
-    thread: std::thread::JoinHandle<T>,
+    thread: thread::JoinHandle<T>,
 }
 
 impl<T> Thread<T> {
-    const fn new(name: &'static str, thread: std::thread::JoinHandle<T>) -> Self {
+    const fn new(name: &'static str, thread: thread::JoinHandle<T>) -> Self {
         Self { name, thread }
     }
 
