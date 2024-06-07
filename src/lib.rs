@@ -36,8 +36,10 @@ mod session;
 /// Since this is the main entry, all possible errors are returned as [`color_eyre::Result`].
 pub fn run(action: CliAction) -> Result<()> {
     match action {
-        CliAction::Search(args) => run_search(args),
-    }
+        CliAction::Search(args) => run_search(args)?,
+    };
+
+    Ok(())
 }
 
 fn run_search(
