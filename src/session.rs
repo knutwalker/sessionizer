@@ -3,7 +3,7 @@ use std::{
     process::{Command, Output},
 };
 
-use crate::{warn, Entry, Result, TmuxSession};
+use crate::{debug, info, warn, Entry, Result, TmuxSession};
 
 pub fn fetch_tmux_sessions(handle: impl FnMut(Entry) -> Result<()>) {
     let mut cmd = Command::new("tmux");
@@ -24,7 +24,7 @@ pub fn fetch_tmux_sessions(handle: impl FnMut(Entry) -> Result<()>) {
             }
         }
         Err(err) => {
-            warn!("failed to get tmux sessions: {}", err);
+            warn!("failed to get tmux output: {}", err);
         }
     }
 }
@@ -32,7 +32,10 @@ pub fn fetch_tmux_sessions(handle: impl FnMut(Entry) -> Result<()>) {
 fn parse_tmux_output(out: Output, mut handle: impl FnMut(Entry) -> Result<()>) -> Result<()> {
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        warn!(status =? out.status, "tmux error: {}", err);
+        debug!(status =? out.status, exit_code =? out.status.code(), "tmux error: {}", err);
+        if out.status.code() == Some(1) {
+            info!("Tmux doesn't seem to be running");
+        }
     }
 
     let out = String::from_utf8(out.stdout)?;
