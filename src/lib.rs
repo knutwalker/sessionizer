@@ -5,7 +5,7 @@ use std::{
     thread,
 };
 
-use color_eyre::eyre::{eyre, OptionExt as _};
+use color_eyre::eyre::eyre;
 use panic_message::panic_message;
 use tracing::{debug, info, trace, warn};
 
@@ -53,15 +53,13 @@ fn run_search(
         query,
     }: Search,
 ) -> Result<()> {
-    let home = home::home_dir().ok_or_eyre("failed to get user home directory")?;
-
     let (tx, entries) = spawn_collector();
 
-    let tmux_ls = (scope.check_tmux()).then(|| find_tmux_sessions(tx.clone()));
-
     if scope.check_projects() {
-        find_projects(&home, &tx);
+        find_projects(&tx)?;
     }
+
+    let tmux_ls = (scope.check_tmux()).then(|| find_tmux_sessions(tx.clone()));
 
     let _ = tmux_ls.map(Thread::join).transpose()?;
 
@@ -109,7 +107,7 @@ fn spawn_collector() -> (SyncSender<Entry>, Thread<Vec<Entry>>) {
     let (tx, rx) = mpsc::sync_channel::<Entry>(16);
     let thread = thread::spawn(move || {
         entry::process_entries(rx.into_iter().inspect(|entry| {
-            trace!(?entry);
+            trace!(?entry, "Entry for possible selection");
         }))
     });
 
