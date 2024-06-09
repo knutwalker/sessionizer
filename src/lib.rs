@@ -6,7 +6,7 @@ use std::{
 };
 
 use kommandozeile::{
-    color_eyre::eyre::{eyre, OptionExt},
+    color_eyre::eyre::{eyre, OptionExt as _},
     tracing::{debug, info, trace, warn},
     Result,
 };
