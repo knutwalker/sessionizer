@@ -1,4 +1,4 @@
-use std::{path::PathBuf, process::Command};
+use std::{env, path::PathBuf, process::Command};
 
 use indexmap::IndexMap;
 use kommandozeile::color_eyre::{eyre::eyre, Section, SectionExt};
@@ -28,56 +28,22 @@ pub enum ActionError {
 }
 
 pub fn cmd(action: &Action) -> Result<Command> {
-    build_command(action, CommandArgs::default())
-}
-
-type EnvLookup = dyn Fn(&str) -> Result<String, ActionError>;
-
-struct CommandArgs {
-    inside_tmux: bool,
-    root_env: Box<EnvLookup>,
-}
-
-impl Default for CommandArgs {
-    fn default() -> Self {
-        Self {
-            inside_tmux: std::env::var_os("TMUX").is_some(),
-            root_env: Box::new(use_std_env),
-        }
-    }
-}
-
-impl From<bool> for CommandArgs {
-    fn from(inside_tmux: bool) -> Self {
-        Self {
-            inside_tmux,
-            ..Default::default()
-        }
-    }
-}
-
-impl<F: Fn(&str) -> Result<String, ActionError> + 'static> From<F> for CommandArgs {
-    fn from(root_env: F) -> Self {
-        Self {
-            root_env: Box::new(root_env),
-            ..Default::default()
-        }
-    }
+    build_command(action, env::var_os("TMUX").is_some(), use_std_env)
 }
 
 fn use_std_env(k: &str) -> Result<String, ActionError> {
-    std::env::var(k).map_err(|e| match e {
-        std::env::VarError::NotPresent => ActionError::VarNotFound,
-        std::env::VarError::NotUnicode(_) => ActionError::NotUtf8,
+    env::var(k).map_err(|e| match e {
+        env::VarError::NotPresent => ActionError::VarNotFound,
+        env::VarError::NotUnicode(_) => ActionError::NotUtf8,
     })
 }
 
-fn build_command(action: &Action, args: impl Into<CommandArgs>) -> Result<Command> {
+fn build_command(
+    action: &Action,
+    inside_tmux: bool,
+    root_env: impl Fn(&str) -> Result<String, ActionError>,
+) -> Result<Command> {
     debug!(?action, "Running action on a new session");
-
-    let args = args.into();
-    let inside_tmux = args.inside_tmux;
-    let root_env = args.root_env;
 
     let mut cmd = Command::new("tmux");
 
@@ -178,6 +144,10 @@ mod tests {
 
     use super::*;
 
+    fn command(action: &Action, inside_tmux: bool) -> Command {
+        build_command(action, inside_tmux, |_| Err(ActionError::VarNotFound)).unwrap()
+    }
+
     #[allow(clippy::needless_pass_by_value)]
     fn assert_cmd<const N: usize>(cmd: Command, expected: [&str; N]) {
         assert_eq!(cmd.get_program(), "tmux");
@@ -199,7 +169,7 @@ mod tests {
         };
 
         for (inside_tmux, expected) in [(true, "switch-client"), (false, "attach-session")] {
-            let cmd = build_command(&action, inside_tmux).unwrap();
+            let cmd = command(&action, inside_tmux);
 
             let expected = [
                 "new-session",
@@ -228,7 +198,7 @@ mod tests {
             name: "test".to_owned(),
         };
 
-        let cmd = build_command(&action, inside_tmux).unwrap();
+        let cmd = command(&action, inside_tmux);
 
         let expected = if inside_tmux {
             "switch-client"
@@ -251,7 +221,7 @@ mod tests {
             },
         };
 
-        let cmd = build_command(&action, true).unwrap();
+        let cmd = command(&action, true);
 
         let expected = [
             "new-session",
@@ -277,7 +247,6 @@ mod tests {
 
     #[test]
     fn expand_env_vars_when_creating_a_session() {
-        std::env::set_var("SESSIONIZER_TEST", "frobnicate");
         let action = Action::Create {
             name: "test".to_owned(),
             root: PathBuf::from("/tmp"),
@@ -293,7 +262,11 @@ mod tests {
             },
         };
 
-        let cmd = build_command(&action, true).unwrap();
+        let cmd = build_command(&action, true, |k| {
+            assert_eq!(k, "SESSIONIZER_TEST");
+            Ok("frobnicate".to_owned())
+        })
+        .unwrap();
 
         let expected = [
             "new-session",
@@ -330,12 +303,7 @@ mod tests {
             },
         };
 
-        let args = CommandArgs {
-            inside_tmux: true,
-            root_env: Box::new(|_| Err(ActionError::VarNotFound)),
-        };
-
-        let err = build_command(&action, args).unwrap_err();
+        let err = build_command(&action, true, |_| Err(ActionError::VarNotFound)).unwrap_err();
         let error = err.downcast::<ActionError>().unwrap();
 
         assert_eq!(error, ActionError::VarNotFound);
@@ -352,7 +320,7 @@ mod tests {
             },
         };
 
-        let cmd = build_command(&action, true).unwrap();
+        let cmd = command(&action, true);
 
         let expected = [
             "new-session",
@@ -395,7 +363,7 @@ mod tests {
             },
         };
 
-        let cmd = build_command(&action, true).unwrap();
+        let cmd = command(&action, true);
 
         let expected = [
             "new-session",
@@ -437,7 +405,7 @@ mod tests {
             },
         };
 
-        let cmd = build_command(&action, true).unwrap();
+        let cmd = command(&action, true);
 
         let expected = [
             "new-session",
@@ -484,7 +452,7 @@ mod tests {
             },
         };
 
-        let cmd = build_command(&action, true).unwrap();
+        let cmd = command(&action, true);
 
         let expected = [
             "new-session",
@@ -535,7 +503,7 @@ mod tests {
             },
         };
 
-        let cmd = build_command(&action, true).unwrap();
+        let cmd = command(&action, true);
 
         let expected = [
             "new-session",
@@ -582,7 +550,7 @@ mod tests {
             },
         };
 
-        let cmd = build_command(&action, true).unwrap();
+        let cmd = command(&action, true);
 
         let expected = if remain { "on" } else { "off" };
         let expected = [
