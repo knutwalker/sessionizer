@@ -812,7 +812,6 @@ impl<'de> Deserialize<'de> for OnExit {
 #[cfg(test)]
 mod tests {
     use indexmap::IndexMap;
-    use rstest::rstest;
 
     use super::*;
 
@@ -854,8 +853,7 @@ mod tests {
         );
     }
 
-    #[rstest]
-    fn run_aliases(#[values("cmd", "run", "command")] cmd: &str) {
+    fn test_run_aliases(cmd: &str) {
         let config = format!(
             r#"
                     [[run]]
@@ -875,8 +873,22 @@ mod tests {
         );
     }
 
-    #[rstest]
-    fn window_aliases(#[values("window", "windows")] window: &str) {
+    #[test]
+    fn run_aliases_cmd() {
+        test_run_aliases("cmd");
+    }
+
+    #[test]
+    fn run_aliases_run() {
+        test_run_aliases("run");
+    }
+
+    #[test]
+    fn run_aliases_command() {
+        test_run_aliases("command");
+    }
+
+    fn test_window_aliases(window: &str) {
         let config = format!(
             r#"
                     [[{window}]]
@@ -893,8 +905,17 @@ mod tests {
         );
     }
 
-    #[rstest]
-    fn window_run_aliases(#[values("cmd", "run", "command")] cmd: &str) {
+    #[test]
+    fn window_aliases_windows() {
+        test_window_aliases("windows");
+    }
+
+    #[test]
+    fn window_aliases_window() {
+        test_window_aliases("window");
+    }
+
+    fn test_window_run_aliases(cmd: &str) {
         let config = format!(
             r#"
                     [[window]]
@@ -915,8 +936,22 @@ mod tests {
         );
     }
 
-    #[rstest]
-    fn window_dir_aliases(#[values("path", "workdir", "wd", "pwd", "cwd", "dir")] dir: &str) {
+    #[test]
+    fn window_run_aliases_cmd() {
+        test_window_run_aliases("cmd");
+    }
+
+    #[test]
+    fn window_run_aliases_run() {
+        test_window_run_aliases("run");
+    }
+
+    #[test]
+    fn window_run_aliases_command() {
+        test_window_run_aliases("command");
+    }
+
+    fn test_window_dir_aliases(dir: &str) {
         let config = format!(
             r#"
                     [[window]]
@@ -937,8 +972,37 @@ mod tests {
         );
     }
 
-    #[rstest]
-    fn window_on_exit_aliases(#[values("keep-alive", "remain", "on-exit")] on_exit: &str) {
+    #[test]
+    fn window_dir_aliases_path() {
+        test_window_dir_aliases("path");
+    }
+
+    #[test]
+    fn window_dir_aliases_workdir() {
+        test_window_dir_aliases("workdir");
+    }
+
+    #[test]
+    fn window_dir_aliases_wd() {
+        test_window_dir_aliases("wd");
+    }
+
+    #[test]
+    fn window_dir_aliases_pwd() {
+        test_window_dir_aliases("pwd");
+    }
+
+    #[test]
+    fn window_dir_aliases_cwd() {
+        test_window_dir_aliases("cwd");
+    }
+
+    #[test]
+    fn window_dir_aliases_dir() {
+        test_window_dir_aliases("dir");
+    }
+
+    fn test_window_on_exit_aliases(on_exit: &str) {
         let config = format!(
             r#"
                     [[window]]
@@ -959,18 +1023,22 @@ mod tests {
         );
     }
 
-    #[rstest]
-    #[case(r#""kill""#, OnExit::Destroy)]
-    #[case(r#""destroy""#, OnExit::Destroy)]
-    #[case(r"false", OnExit::Destroy)]
-    #[case(r#""inactive""#, OnExit::Deactivate)]
-    #[case(r#""remain""#, OnExit::Deactivate)]
-    #[case(r#""deactivate""#, OnExit::Deactivate)]
-    #[case(r#""stay""#, OnExit::Shell)]
-    #[case(r#""keep""#, OnExit::Shell)]
-    #[case(r#""shell""#, OnExit::Shell)]
-    #[case(r"true", OnExit::Shell)]
-    fn window_on_exit_values(#[case] on_exit: &str, #[case] expected: OnExit) {
+    #[test]
+    fn window_on_exit_aliases_keep_alive() {
+        test_window_on_exit_aliases("keep-alive");
+    }
+
+    #[test]
+    fn window_on_exit_aliases_remain() {
+        test_window_on_exit_aliases("remain");
+    }
+
+    #[test]
+    fn window_on_exit_aliases_on_exit() {
+        test_window_on_exit_aliases("on-exit");
+    }
+
+    fn test_window_on_exit_values(on_exit: &str, expected: OnExit) {
         let config = format!(
             r#"
                     [[window]]
@@ -989,5 +1057,55 @@ mod tests {
                 ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn window_on_exit_values_kill_to_destroy() {
+        test_window_on_exit_values(r#""kill""#, OnExit::Destroy);
+    }
+
+    #[test]
+    fn window_on_exit_values_destroy_to_destroy() {
+        test_window_on_exit_values(r#""destroy""#, OnExit::Destroy);
+    }
+
+    #[test]
+    fn window_on_exit_values_false_to_destroy() {
+        test_window_on_exit_values(r"false", OnExit::Destroy);
+    }
+
+    #[test]
+    fn window_on_exit_values_inactive_to_deactivate() {
+        test_window_on_exit_values(r#""inactive""#, OnExit::Deactivate);
+    }
+
+    #[test]
+    fn window_on_exit_values_remain_to_deactivate() {
+        test_window_on_exit_values(r#""remain""#, OnExit::Deactivate);
+    }
+
+    #[test]
+    fn window_on_exit_values_deactivate_to_deactivate() {
+        test_window_on_exit_values(r#""deactivate""#, OnExit::Deactivate);
+    }
+
+    #[test]
+    fn window_on_exit_values_stay_to_shell() {
+        test_window_on_exit_values(r#""stay""#, OnExit::Shell);
+    }
+
+    #[test]
+    fn window_on_exit_values_keep_to_shell() {
+        test_window_on_exit_values(r#""keep""#, OnExit::Shell);
+    }
+
+    #[test]
+    fn window_on_exit_values_shell_to_shell() {
+        test_window_on_exit_values(r#""shell""#, OnExit::Shell);
+    }
+
+    #[test]
+    fn window_on_exit_values_true_to_shell() {
+        test_window_on_exit_values(r"true", OnExit::Shell);
     }
 }

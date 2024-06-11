@@ -297,7 +297,6 @@ impl Info {
 #[cfg(test)]
 mod tests {
     use kommandozeile::clap::error::{ContextKind, ContextValue, ErrorKind};
-    use rstest::rstest;
 
     use super::*;
 
@@ -348,9 +347,14 @@ mod tests {
         );
     }
 
-    #[rstest]
-    fn dry_run_flag_for_search(#[values("--dry-run", "-n")] flag: &str) {
-        assert_search!([flag], Search { dry_run: true });
+    #[test]
+    fn dry_run_long_flag_for_search() {
+        assert_search!(["--dry-run"], Search { dry_run: true });
+    }
+
+    #[test]
+    fn dry_run_short_flag_for_search() {
+        assert_search!(["-n"], Search { dry_run: true });
     }
 
     #[test]
@@ -358,20 +362,60 @@ mod tests {
         assert_search!(["--insecure"], Search { insecure: true });
     }
 
-    #[rstest]
-    fn tmux_only_scope(#[values("--tmux", "--tmux-only", "-t")] flag: &str) {
+    #[test]
+    fn tmux_only_scope_long() {
         assert_search!(
-            [flag],
+            ["--tmux"],
             Search {
                 scope: Scope::TmuxOnly
             }
         );
     }
 
-    #[rstest]
-    fn projects_only_scope(#[values("--projects", "--projects-only", "-p")] flag: &str) {
+    #[test]
+    fn tmux_only_scope_very_long() {
         assert_search!(
-            [flag],
+            ["--tmux-only"],
+            Search {
+                scope: Scope::TmuxOnly
+            }
+        );
+    }
+
+    #[test]
+    fn tmux_only_scope_short() {
+        assert_search!(
+            ["-t"],
+            Search {
+                scope: Scope::TmuxOnly
+            }
+        );
+    }
+
+    #[test]
+    fn projects_only_scope_long() {
+        assert_search!(
+            ["--projects"],
+            Search {
+                scope: Scope::ProjectsOnly
+            }
+        );
+    }
+
+    #[test]
+    fn projects_only_scope_very_long() {
+        assert_search!(
+            ["--projects-only"],
+            Search {
+                scope: Scope::ProjectsOnly
+            }
+        );
+    }
+
+    #[test]
+    fn projects_only_scope_short() {
+        assert_search!(
+            ["-p"],
             Search {
                 scope: Scope::ProjectsOnly
             }
