@@ -79,8 +79,13 @@ fn run_search(
         color: use_color,
     };
 
-    let command =
-        prompt_user(selection).and_then(|e| e.map(|e| apply_entry(e, !insecure)).transpose())?;
+    let command = prompt_user(selection).and_then(|e| {
+        e.map(|e| {
+            debug!(eentry =? e, "selected");
+            apply_entry(e, !insecure)
+        })
+        .transpose()
+    })?;
 
     let Some(mut cmd) = command else {
         return Ok(());
