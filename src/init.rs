@@ -4,6 +4,7 @@ use std::{
     fmt::{self, Display},
     fs::{self, Metadata, OpenOptions, Permissions},
     io::{self, Write as _},
+    mem,
     os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _},
     path::{Path, PathBuf},
     process::Command,
@@ -14,7 +15,10 @@ use kommandozeile::color_eyre::{
     eyre::Context as _, owo_colors::OwoColorize as _, Section as _, SectionExt as _,
 };
 use onlyerror::Error;
-use serde::{Deserialize, Deserializer};
+use serde::{
+    de::{Error as _, MapAccess, Visitor},
+    Deserialize, Deserializer,
+};
 use tempfile::NamedTempFile;
 
 use crate::{debug, eyre, info, trace, Result};
@@ -556,35 +560,20 @@ struct InitFile {
     metadata: Metadata,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct Config {
-    #[serde(default)]
     env: indexmap::IndexMap<String, String>,
-    #[serde(default)]
-    #[serde(alias = "window")]
     windows: Vec<Window>,
-    #[serde(default)]
     run: Vec<Run>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct Window {
     name: Option<String>,
-    #[serde(alias = "path")]
-    #[serde(alias = "workdir")]
-    #[serde(alias = "wd")]
-    #[serde(alias = "pwd")]
-    #[serde(alias = "cwd")]
     dir: Option<PathBuf>,
-    #[serde(alias = "cmd")]
-    #[serde(alias = "run")]
     command: Option<String>,
-    #[serde(alias = "keep-alive")]
-    #[serde(alias = "remain")]
     on_exit: Option<OnExit>,
 }
 
@@ -596,13 +585,182 @@ enum OnExit {
     Shell,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct Run {
-    #[serde(alias = "cmd")]
-    #[serde(alias = "run")]
     command: String,
+}
+
+impl<'de> Deserialize<'de> for Config {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &["env", "window", "windows", "run"];
+
+        struct Vis;
+        impl<'de> Visitor<'de> for Vis {
+            type Value = Config;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Formatter::write_str(formatter, "struct Config")
+            }
+
+            #[inline]
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut config = Config::default();
+                let mut free = [true; 3];
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "env" => {
+                            if !mem::take(&mut free[0]) {
+                                return Err(A::Error::duplicate_field("env"));
+                            }
+                            config.env = map.next_value()?;
+                        }
+                        "window" | "windows" => {
+                            if !mem::take(&mut free[1]) {
+                                return Err(A::Error::duplicate_field("windows"));
+                            }
+                            config.windows = map.next_value()?;
+                        }
+                        "run" => {
+                            if !mem::take(&mut free[2]) {
+                                return Err(A::Error::duplicate_field("run"));
+                            }
+                            config.run = map.next_value()?;
+                        }
+                        otherwise => return Err(A::Error::unknown_field(otherwise, FIELDS)),
+                    }
+                }
+
+                Ok(config)
+            }
+        }
+
+        deserializer.deserialize_struct("Config", FIELDS, Vis)
+    }
+}
+
+impl<'de> Deserialize<'de> for Window {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &[
+            "name",
+            "cwd",
+            "dir",
+            "path",
+            "pwd",
+            "wd",
+            "workdir",
+            "cmd",
+            "command",
+            "run",
+            "keep-alive",
+            "on-exit",
+            "remain",
+        ];
+
+        struct Vis;
+
+        impl<'de> Visitor<'de> for Vis {
+            type Value = Window;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Formatter::write_str(formatter, "struct Window")
+            }
+
+            #[inline]
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut window = Window::default();
+                let mut free = [true; 4];
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "name" => {
+                            if !mem::take(&mut free[0]) {
+                                return Err(A::Error::duplicate_field("name"));
+                            }
+                            window.name = map.next_value()?;
+                        }
+                        "cwd" | "dir" | "path" | "pwd" | "wd" | "workdir" => {
+                            if !mem::take(&mut free[1]) {
+                                return Err(A::Error::duplicate_field("dir"));
+                            }
+                            window.dir = map.next_value()?;
+                        }
+                        "cmd" | "command" | "run" => {
+                            if !mem::take(&mut free[2]) {
+                                return Err(A::Error::duplicate_field("command"));
+                            }
+                            window.command = map.next_value()?;
+                        }
+                        "keep-alive" | "on-exit" | "remain" => {
+                            if !mem::take(&mut free[3]) {
+                                return Err(A::Error::duplicate_field("on-exit"));
+                            }
+                            window.on_exit = map.next_value()?;
+                        }
+                        otherwise => return Err(A::Error::unknown_field(otherwise, FIELDS)),
+                    }
+                }
+
+                Ok(window)
+            }
+        }
+
+        deserializer.deserialize_struct("Window", FIELDS, Vis)
+    }
+}
+
+impl<'de> Deserialize<'de> for Run {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &["cmd", "command", "run"];
+
+        struct Vis;
+        impl<'de> Visitor<'de> for Vis {
+            type Value = Run;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Formatter::write_str(formatter, "struct Run")
+            }
+
+            #[inline]
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut command = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "cmd" | "command" | "run" => {
+                            if command.is_some() {
+                                return Err(A::Error::duplicate_field("command"));
+                            }
+                            command = Some(map.next_value()?);
+                        }
+                        otherwise => return Err(A::Error::unknown_field(otherwise, FIELDS)),
+                    }
+                }
+                let command = command.ok_or_else(|| A::Error::missing_field("command"))?;
+                Ok(Run { command })
+            }
+        }
+
+        deserializer.deserialize_struct("Run", FIELDS, Vis)
+    }
 }
 
 impl<'de> Deserialize<'de> for OnExit {
@@ -613,7 +771,7 @@ impl<'de> Deserialize<'de> for OnExit {
         const VARIANTS: &[&str] = &["destroy", "deactivate", "shell"];
 
         struct OnExitVisitor;
-        impl<'de> serde::de::Visitor<'de> for OnExitVisitor {
+        impl<'de> Visitor<'de> for OnExitVisitor {
             type Value = OnExit;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
