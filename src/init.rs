@@ -10,19 +10,14 @@ use std::{
 };
 
 use inquire::Select;
-use kommandozeile::{
-    color_eyre::{
-        eyre::{eyre, Context as _},
-        owo_colors::OwoColorize as _,
-        Section as _, SectionExt as _,
-    },
-    tracing::info,
+use kommandozeile::color_eyre::{
+    eyre::Context as _, owo_colors::OwoColorize as _, Section as _, SectionExt as _,
 };
 use onlyerror::Error;
 use serde::{Deserialize, Deserializer};
 use tempfile::NamedTempFile;
 
-use crate::{debug, trace, Result};
+use crate::{debug, eyre, info, trace, Result};
 
 #[derive(Debug, Clone, Default)]
 pub struct Init {
