@@ -51,10 +51,10 @@ rustc_version = "0.4.0"
 time = { version = "0.3.36", features = ["formatting"] }
 
 [profile.release]
-codegen-units = 1
+codegen-units = 8
 debug = false
 debug-assertions = false
-lto = true
+lto = 'thin'
 opt-level = 3
 overflow-checks = true
 rpath = false
