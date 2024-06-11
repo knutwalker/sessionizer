@@ -252,6 +252,7 @@ struct Info {
     build_version: &'static str,
     build_timestamp: &'static str,
     commit_sha: &'static str,
+    commit_sha_short: &'static str,
     commit_date: &'static str,
     rustc_version: &'static str,
     rustc_channel: &'static str,
@@ -265,12 +266,13 @@ impl Display for Info {
         writeln!(f, "{:<20} {}", "Build Version:", self.build_version)?;
         writeln!(f, "{:<20} {}", "Build Timestamp:", self.build_timestamp)?;
         writeln!(f, "{:<20} {}", "Commit SHA:", self.commit_sha)?;
+        writeln!(f, "{:<20} {}", "Commit Short SHA:", self.commit_sha_short)?;
         writeln!(f, "{:<20} {}", "Commit Date:", self.commit_date)?;
         writeln!(f, "{:<20} {}", "rustc Version:", self.rustc_version)?;
         writeln!(f, "{:<20} {}", "rustc Channel:", self.rustc_channel)?;
         writeln!(f, "{:<20} {}", "Host Triple:", self.host_triple)?;
         writeln!(f, "{:<20} {}", "Target Triple:", self.target_triple)?;
-        writeln!(f, "{:<20} {}", "cargo Profile:", self.cargo_profile)?;
+        writeln!(f, "{:<20} {}", "Cargo Profile:", self.cargo_profile)?;
         Ok(())
     }
 }
@@ -279,14 +281,15 @@ impl Info {
     const fn new() -> Self {
         Self {
             build_version: env!("CARGO_PKG_VERSION"),
-            build_timestamp: env!("VERGEN_BUILD_TIMESTAMP"),
-            commit_sha: env!("VERGEN_GIT_SHA"),
-            commit_date: env!("VERGEN_GIT_COMMIT_TIMESTAMP"),
-            rustc_version: env!("VERGEN_RUSTC_SEMVER"),
-            rustc_channel: env!("VERGEN_RUSTC_CHANNEL"),
-            host_triple: env!("VERGEN_RUSTC_HOST_TRIPLE"),
-            target_triple: env!("VERGEN_CARGO_TARGET_TRIPLE"),
-            cargo_profile: env!("VERGEN_CARGO_PROFILE"),
+            build_timestamp: env!("SESSIONIZER_BUILD_TIMESTAMP"),
+            commit_sha: env!("SESSIONIZER_GIT_SHA"),
+            commit_sha_short: env!("SESSIONIZER_GIT_SHA_SHORT"),
+            commit_date: env!("SESSIONIZER_GIT_COMMIT_TIMESTAMP"),
+            rustc_version: env!("SESSIONIZER_RUSTC_VERSION"),
+            rustc_channel: env!("SESSIONIZER_RUSTC_CHANNEL"),
+            host_triple: env!("SESSIONIZER_HOST_TRIPLE"),
+            target_triple: env!("SESSIONIZER_TARGET_TRIPLE"),
+            cargo_profile: env!("SESSIONIZER_CARGO_PROFILE"),
         }
     }
 }

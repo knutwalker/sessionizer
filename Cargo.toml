@@ -47,13 +47,8 @@ features = [
 ]
 
 [build-dependencies]
-vergen = { version = "8.2.6", features = [
-  "build",
-  "cargo",
-  "git",
-  "rustc",
-  "gitcl",
-] }
+rustc_version = "0.4.0"
+time = { version = "0.3.36", features = ["formatting"] }
 
 [profile.release]
 codegen-units = 1
