@@ -1,6 +1,10 @@
-use std::{path::PathBuf, process::Command};
+use std::{env, path::PathBuf, process::Command};
 
-use crate::{debug, Init, WindowCommand};
+use indexmap::IndexMap;
+use kommandozeile::color_eyre::{eyre::eyre, Section, SectionExt};
+use onlyerror::Error;
+
+use crate::{debug, Init, Result, WindowCommand};
 
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -14,11 +18,31 @@ pub enum Action {
     },
 }
 
-pub fn cmd(action: &Action) -> Command {
-    build_command(action, std::env::var_os("TMUX").is_some())
+#[allow(clippy::module_name_repetitions)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Error)]
+pub enum ActionError {
+    #[error("The variable is not defined")]
+    VarNotFound,
+    #[error("The variable is not valid utf-8")]
+    NotUtf8,
 }
 
-fn build_command(action: &Action, inside_tmux: bool) -> Command {
+pub fn cmd(action: &Action) -> Result<Command> {
+    build_command(action, env::var_os("TMUX").is_some(), use_std_env)
+}
+
+fn use_std_env(k: &str) -> Result<String, ActionError> {
+    env::var(k).map_err(|e| match e {
+        env::VarError::NotPresent => ActionError::VarNotFound,
+        env::VarError::NotUnicode(_) => ActionError::NotUtf8,
+    })
+}
+
+fn build_command(
+    action: &Action,
+    inside_tmux: bool,
+    root_env: impl Fn(&str) -> Result<String, ActionError>,
+) -> Result<Command> {
     debug!(?action, "Running action on a new session");
 
     let mut cmd = Command::new("tmux");
@@ -38,15 +62,25 @@ fn build_command(action: &Action, inside_tmux: bool) -> Command {
             root,
             on_init,
         } => {
+            let get_env = |k: &str| root_env(k).map(Some);
             let cmd = cmd.args(["new-session", "-d", "-s", name, "-c"]).arg(root);
 
-            for (key, value) in root
-                .to_str()
-                .map(|r| ("SESSION_ROOT", r))
-                .into_iter()
-                .chain([("SESSION_NAME", name.as_str())])
-                .chain(on_init.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-            {
+            let mut env = IndexMap::with_capacity(2 + on_init.env.len());
+            let _ = env.insert("SESSION_ROOT", root.to_string_lossy().into_owned());
+            let _ = env.insert("SESSION_NAME", name.clone());
+            for (k, v) in &on_init.env {
+                let v = shellexpand::env_with_context(v.as_str(), |k| {
+                    env.get(k).cloned().map(Some).map_or_else(|| get_env(k), Ok)
+                })
+                .map_err(|e| {
+                    eyre!(e.cause)
+                        .section(e.var_name.header("Variable:"))
+                        .note("You can provide a default value by using ${VAR_NAME:default_value}")
+                })?;
+                let _ = env.insert(k.as_str(), v.into_owned());
+            }
+
+            for (key, value) in env {
                 let _ = cmd.arg("-e").arg(format!("{key}={value}"));
             }
 
@@ -99,7 +133,7 @@ fn build_command(action: &Action, inside_tmux: bool) -> Command {
         }
     };
 
-    cmd
+    Ok(cmd)
 }
 
 #[cfg(test)]
@@ -109,6 +143,10 @@ mod tests {
     use crate::init::SpawnWindow;
 
     use super::*;
+
+    fn command(action: &Action, inside_tmux: bool) -> Command {
+        build_command(action, inside_tmux, |_| Err(ActionError::VarNotFound)).unwrap()
+    }
 
     #[allow(clippy::needless_pass_by_value)]
     fn assert_cmd<const N: usize>(cmd: Command, expected: [&str; N]) {
@@ -131,7 +169,7 @@ mod tests {
         };
 
         for (inside_tmux, expected) in [(true, "switch-client"), (false, "attach-session")] {
-            let cmd = build_command(&action, inside_tmux);
+            let cmd = command(&action, inside_tmux);
 
             let expected = [
                 "new-session",
@@ -160,7 +198,7 @@ mod tests {
             name: "test".to_owned(),
         };
 
-        let cmd = build_command(&action, inside_tmux);
+        let cmd = command(&action, inside_tmux);
 
         let expected = if inside_tmux {
             "switch-client"
@@ -183,7 +221,7 @@ mod tests {
             },
         };
 
-        let cmd = build_command(&action, true);
+        let cmd = command(&action, true);
 
         let expected = [
             "new-session",
@@ -208,6 +246,70 @@ mod tests {
     }
 
     #[test]
+    fn expand_env_vars_when_creating_a_session() {
+        let action = Action::Create {
+            name: "test".to_owned(),
+            root: PathBuf::from("/tmp"),
+            on_init: Init {
+                env: vec![
+                    ("FOO".to_owned(), "let's $SESSIONIZER_TEST".to_owned()),
+                    (
+                        "BAR".to_owned(),
+                        "Can also use previously defined vars: '${FOO}'".to_owned(),
+                    ),
+                ],
+                ..Default::default()
+            },
+        };
+
+        let cmd = build_command(&action, true, |k| {
+            assert_eq!(k, "SESSIONIZER_TEST");
+            Ok("frobnicate".to_owned())
+        })
+        .unwrap();
+
+        let expected = [
+            "new-session",
+            "-d",
+            "-s",
+            "test",
+            "-c",
+            "/tmp",
+            "-e",
+            "SESSION_ROOT=/tmp",
+            "-e",
+            "SESSION_NAME=test",
+            "-e",
+            "FOO=let's frobnicate",
+            "-e",
+            "BAR=Can also use previously defined vars: 'let's frobnicate'",
+            ";",
+            "switch-client",
+            "-t",
+            "=test",
+        ];
+
+        assert_cmd(cmd, expected);
+    }
+
+    #[test]
+    fn fail_when_expanding_unknown_env() {
+        let action = Action::Create {
+            name: "test".to_owned(),
+            root: PathBuf::from("/tmp"),
+            on_init: Init {
+                env: vec![("FOO".to_owned(), "$SESSIONIZER_TEST_UNSET".to_owned())],
+                ..Default::default()
+            },
+        };
+
+        let err = build_command(&action, true, |_| Err(ActionError::VarNotFound)).unwrap_err();
+        let error = err.downcast::<ActionError>().unwrap();
+
+        assert_eq!(error, ActionError::VarNotFound);
+    }
+
+    #[test]
     fn run_commands_in_main_window_when_creating_a_session() {
         let action = Action::Create {
             name: "test".to_owned(),
@@ -218,7 +320,7 @@ mod tests {
             },
         };
 
-        let cmd = build_command(&action, true);
+        let cmd = command(&action, true);
 
         let expected = [
             "new-session",
@@ -261,7 +363,7 @@ mod tests {
             },
         };
 
-        let cmd = build_command(&action, true);
+        let cmd = command(&action, true);
 
         let expected = [
             "new-session",
@@ -303,7 +405,7 @@ mod tests {
             },
         };
 
-        let cmd = build_command(&action, true);
+        let cmd = command(&action, true);
 
         let expected = [
             "new-session",
@@ -350,7 +452,7 @@ mod tests {
             },
         };
 
-        let cmd = build_command(&action, true);
+        let cmd = command(&action, true);
 
         let expected = [
             "new-session",
@@ -401,7 +503,7 @@ mod tests {
             },
         };
 
-        let cmd = build_command(&action, true);
+        let cmd = command(&action, true);
 
         let expected = [
             "new-session",
@@ -448,7 +550,7 @@ mod tests {
             },
         };
 
-        let cmd = build_command(&action, true);
+        let cmd = command(&action, true);
 
         let expected = if remain { "on" } else { "off" };
         let expected = [
