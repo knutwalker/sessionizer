@@ -14,7 +14,7 @@ keywords = ["tmux", "session", "sessionizer"]
 
 [dependencies]
 bytecount = "0.6.8"
-fuzzy-select = "0.1.1"
+fuzzy-select = "0.1.2"
 home = "0.5.9"
 ignore = "0.4.21"
 indexmap = { version = "2.2.2", features = ["serde"] }

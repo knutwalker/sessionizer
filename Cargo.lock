@@ -398,13 +398,13 @@ dependencies = [
 
 [[package]]
 name = "fuzzy-select"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6eef45657cbb26c7d16a064714abce889e9ea1de6874963756ed110a9324e4f7"
+checksum = "b04f9279e689199bfb5881ae65f0cb2fcf4b9deb712d1118b1c34a41e0c59280"
 dependencies = [
  "crossterm 0.27.0",
  "nucleo",
- "thiserror",
+ "onlyerror",
  "unicode-segmentation",
 ]
 
@@ -677,9 +677,9 @@ dependencies = [
 
 [[package]]
 name = "nucleo"
-version = "0.3.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9c28316df514918915799651c5a1cc8f1dd33a9294e1cc22f27fd19453fd62c"
+checksum = "5262af4c94921c2646c5ac6ff7900c2af9cbb08dc26a797e18130a7019c039d4"
 dependencies = [
  "nucleo-matcher",
  "parking_lot",
