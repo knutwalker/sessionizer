@@ -150,7 +150,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5db83dced34638ad474f39f250d7fea9598bdd239eaced1bdf45d597da0f433f"
 dependencies = [
  "clap_builder",
- "clap_derive",
 ]
 
 [[package]]
@@ -163,18 +162,6 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
-]
-
-[[package]]
-name = "clap_derive"
-version = "4.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c780290ccf4fb26629baa7a1081e68ced113f1d3ec302fa5948f1c381ebf06c6"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
@@ -454,12 +441,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 
 [[package]]
-name = "heck"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
-
-[[package]]
 name = "hermit-abi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -555,20 +536,6 @@ name = "itoa"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49f1f14873335454500d59611f1cf4a4b0f786f9ac11f4312a78e4cf2566695b"
-
-[[package]]
-name = "kommandozeile"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce653c73c7b45a73eb4609681198c4cc198570c4b6a1891d96761cab2f1f28cd"
-dependencies = [
- "clap",
- "color-eyre",
- "concolor",
- "tracing",
- "tracing-error",
- "tracing-subscriber",
-]
 
 [[package]]
 name = "lazy_static"
@@ -985,12 +952,14 @@ name = "sessionizer"
 version = "0.2.0"
 dependencies = [
  "bytecount",
+ "clap",
+ "color-eyre",
+ "concolor",
  "fuzzy-select",
  "home",
  "ignore",
  "indexmap",
  "inquire",
- "kommandozeile",
  "onlyerror",
  "panic-message",
  "rustc_version",
@@ -1000,6 +969,9 @@ dependencies = [
  "tempfile",
  "time",
  "toml",
+ "tracing",
+ "tracing-error",
+ "tracing-subscriber",
 ]
 
 [[package]]

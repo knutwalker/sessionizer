@@ -5,14 +5,12 @@ use std::{
     thread,
 };
 
-use kommandozeile::{
-    color_eyre::eyre::{eyre, OptionExt as _},
-    tracing::{debug, info, trace, warn},
-    Result,
-};
+use color_eyre::eyre::{eyre, OptionExt as _};
 use panic_message::panic_message;
+use tracing::{debug, info, trace, warn};
 
 pub use crate::args::{Action as CliAction, Scope, Search};
+pub use color_eyre::Result;
 
 use crate::{
     action::Action,

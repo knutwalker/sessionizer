@@ -10,10 +10,8 @@ use std::{
     process::Command,
 };
 
+use color_eyre::{eyre::Context as _, owo_colors::OwoColorize as _, Section as _, SectionExt as _};
 use inquire::Select;
-use kommandozeile::color_eyre::{
-    eyre::Context as _, owo_colors::OwoColorize as _, Section as _, SectionExt as _,
-};
 use onlyerror::Error;
 use serde::{
     de::{Error as _, MapAccess, Visitor},

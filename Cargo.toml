@@ -14,6 +14,14 @@ keywords = ["tmux", "session", "sessionizer"]
 
 [dependencies]
 bytecount = "0.6.8"
+clap = { version = "4.5.7", features = ["env"] }
+color-eyre = { version = "0.6.3", features = ["issue-url"] }
+concolor = { version = "0.1.1", features = [
+  "api",
+  "clicolor",
+  "interactive",
+  "no_color",
+] }
 fuzzy-select = "0.1.2"
 home = "0.5.9"
 ignore = "0.4.21"
@@ -28,23 +36,12 @@ shellexpand = { version = "3.1.0", features = ["full"] }
 shlex = "1.2.0"
 tempfile = "3.10.1"
 toml = { version = "0.8.8", default-features = false, features = [
-  "parse",
   "indexmap",
+  "parse",
 ] }
-
-[dependencies.kommandozeile]
-version = "0.1.0"
-default-features = false
-features = [
-  "clap_app_color",
-  "clap_color",
-  "clap_derive",
-  "clap_verbose",
-  "color-eyre",
-  "setup_clap",
-  "setup_color-eyre",
-  "setup_tracing",
-]
+tracing = { version = "0.1.40", default-features = false, features = ["std"] }
+tracing-error = "0.2.0"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
 [build-dependencies]
 rustc_version = "0.4.0"

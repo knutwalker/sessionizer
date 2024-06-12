@@ -1,7 +1,7 @@
 use std::{env, path::PathBuf, process::Command};
 
+use color_eyre::{Section as _, SectionExt as _};
 use indexmap::IndexMap;
-use kommandozeile::color_eyre::{Section as _, SectionExt as _};
 use onlyerror::Error;
 
 use crate::{debug, eyre, Init, Result, WindowCommand};
