@@ -1,7 +1,7 @@
 use std::{env, path::PathBuf, process::Command};
 
+use color_eyre::{Section as _, SectionExt as _};
 use indexmap::IndexMap;
-use kommandozeile::color_eyre::{Section as _, SectionExt as _};
 use onlyerror::Error;
 
 use crate::{debug, eyre, Init, Result, WindowCommand};
@@ -138,8 +138,6 @@ fn build_command(
 
 #[cfg(test)]
 mod tests {
-    use rstest::rstest;
-
     use crate::init::SpawnWindow;
 
     use super::*;
@@ -192,8 +190,7 @@ mod tests {
         }
     }
 
-    #[rstest]
-    fn switch_to_existing_session(#[values(true, false)] inside_tmux: bool) {
+    fn test_switch_to_existing_session(inside_tmux: bool) {
         let action = Action::Attach {
             name: "test".to_owned(),
         };
@@ -208,6 +205,16 @@ mod tests {
         let expected = [expected, "-t", "=test"];
 
         assert_cmd(cmd, expected);
+    }
+
+    #[test]
+    fn switch_to_existing_session_within_tmux() {
+        test_switch_to_existing_session(true);
+    }
+
+    #[test]
+    fn switch_to_existing_session_outside_tmux() {
+        test_switch_to_existing_session(false);
     }
 
     #[test]
@@ -532,8 +539,7 @@ mod tests {
         assert_cmd(cmd, expected);
     }
 
-    #[rstest]
-    fn create_windows_with_command_and_explicit_remain(#[values(true, false)] remain: bool) {
+    fn test_create_windows_with_command_and_explicit_remain(remain: bool) {
         let action = Action::Create {
             name: "test".to_owned(),
             root: PathBuf::from("/tmp"),
@@ -584,5 +590,15 @@ mod tests {
         ];
 
         assert_cmd(cmd, expected);
+    }
+
+    #[test]
+    fn create_windows_with_command_and_explicit_remain_true() {
+        test_create_windows_with_command_and_explicit_remain(true);
+    }
+
+    #[test]
+    fn create_windows_with_command_and_explicit_remain_false() {
+        test_create_windows_with_command_and_explicit_remain(false);
     }
 }
