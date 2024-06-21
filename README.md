@@ -61,11 +61,6 @@ This is in contrast to having one tool (say, neovim) and manage different sessio
 
 Invoking `sessionizer` searches a set of paths for directories that would make a good project directory.
 
- > 
- > [!CAUTION]
- > The heuristics for which paths are search and what makes a “good” project are currently based
- > my personal preferences and will likely not work for others.
-
 `sessionizer` will list open tmux sessions as well as all the directories in an `fzf` like interface (`fzf` does not need to be installed and is not used under the hood).
 
 If an existing session is selected, `sessionizer` will either attach to that session or switch the client to that session, depending on whether you are currently inside a session or not.
@@ -78,9 +73,52 @@ In addition, two environment variables are set:
 * `SESSION_NAME`: How the tmux session is named
 * `SESSION_ROOT`: The selected directory (e.g. `cd $SESSION_ROOT` will go to the directory)
 
-#### Useful integrations
+### Search path configuration
 
-##### TMUX
+`sessionizer` reads the environment variable `SESSIONIZER_PATH` to determine the search paths.
+The value of `SESSIONIZER_PATH` is a colon-separated list of paths, similar to the `PATH` environment variable.
+
+A path that is listed in `SESSIONIZER_PATH` will be suggested as a project directory.
+In order to search that path and also suggest subdirectories, special path components `_` and `*` are used as *wildcards*.
+
+The following rules govern how the syntax is used to define how a path is being searched:
+
+* Each component of the path is traversed, but not matched.
+* A path must begin with a regular component and cannot be empty
+* A leading `~` is expanded to the user’s home directory
+* A path ending in a regular component will be used directly
+* If a path contains a *wildcard*, it will be used as a starting point for a search, but is not included directly
+* The *wildcard* `_` traverses any path on that level, but doesn’t include it
+* The *wildcard* `*` traverses *and includes* any path on that level
+* The *wildcards* must be their own component (e.g. `*_` means a regular component `*_`)
+* `\` can be used to escape a *wildcard* (e.g. `\_` will traverse the directory called `_` as regular component)
+* A `_` *wildcard* *must* be followed by either an `_` *wildcard* or a `*` *wildcard*
+* A `*` *wildcard* may be followed by another `*` *wildcard*
+
+#### Examples
+
+|input path|behavior|
+|----------|--------|
+|`/dir`|suggest `/dir` as a project|
+|`/dir/*`|suggest all immediate subdirectories of `/dir`, but not `/dir` itself|
+|`/dir/*:/dir`|suggest all immediate subdirectories of `/dir`, as well `/dir` itself|
+|`/dir/_/*`|suggest all sub-subdirectories of `/dir`, but neither `/dir` itself nor any of its immediate subdirectories|
+|`/dir/*/*`|suggest all immediate subdirectories and sub-subdirectories of `/dir`, but not `/dir` itself|
+|`/dir/\*`|suggest `/dir/*` as a project|
+|`/dir/**`|suggest `/dir/**` as a project|
+
+#### Fallback behavior
+
+If `SESSIONIZER_PATH` is not set, `sessionizer` will use `CDPATH` instead.
+In this case, each entry and treat every path as if it had a `*` wildcard at the end and will skip paths that are not absolute.
+
+If `CDPATH` is also unset, `sessionizer` will query `zoxide` for a list of directories using `zoxide query --list`.
+
+If `zoxide` is not installed, `sessionizer` will use `~/.config/*` as a fallback and print a warning.
+
+### Useful integrations
+
+#### TMUX
 
 To open `sessionizer` from within tmux using `<prefix> <C-f>`, add the following to your `~/.tmux.conf`:
 
@@ -91,7 +129,7 @@ bind-key -r C-f run-shell 'tmux neww sessionizer'
 Note that this is **not required** for `sessionizer` to work.
 You can also run it directly from the shell.
 
-##### Neovim
+#### Neovim
 
 To open `sessionizer` from inside neovim using `<C-f>`, you can add the following to your config:
 
@@ -102,7 +140,7 @@ vim.keymap.set("n", "<C-f>", "<cmd>silent !tmux neww sessionizer<CR>")
 I tend to always have neovim open inside tmux and tend to use the keybinding mentioned above instead of the neovim one.
 I find that it is more likely to have a keybind conflict in neovim than in tmux.
 
-##### Alacritty
+#### Alacritty
 
 To use `sessionizer` as “shell” or entry point for `alacritty`, add the following to your `alacritty.toml`:
 
@@ -112,7 +150,7 @@ program = "/opt/homebrew/bin/bash" # ! Change this to your shell
 args = ["--login", "-c", "/usr/local/bin/sessionizer"] # ! Change this to the path of your sessionizer
 ```
 
-##### Shell
+#### Shell
 
 I have the following aliases in my shell:
 
@@ -239,7 +277,7 @@ It can contain any command that you would otherwise type in the shell when start
  > To get support in `vim`/`neovim`, you can add the [modeline][__link0] `# vim: set ft=bash:`.
  > You can adjust the `ft` based on the shell you are using.
 
-### Inspiration
+## Inspiration
 
 `sessionizer` started of as a more personalized workflow of [The Primeagen’s tmux-sessionizer][__link1].
 
