@@ -423,6 +423,8 @@ fn accept_dir(path: PathBuf, depth: usize) -> Option<Project> {
         return None;
     };
 
+    let depth = depth.max(1);
+
     let search_path = {
         let mut path = path
             .iter()
