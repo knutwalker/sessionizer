@@ -136,7 +136,7 @@ fn apply_entry(entry: Entry, secure: bool) -> Result<Command> {
         Entry::Session(session) => Action::Attach { name: session.name },
     };
 
-    action::cmd(&action)
+    action::cmd(action)
 }
 
 struct Thread<T> {

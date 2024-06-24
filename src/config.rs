@@ -1,13 +1,13 @@
 use std::{
+    collections::HashSet,
     env,
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fmt::{self, Display},
     fs::{self, OpenOptions, Permissions},
     io::{self, Write as _},
     mem,
     os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
-    path::Path,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
 };
 
@@ -19,6 +19,12 @@ use serde::{
     Deserialize, Deserializer,
 };
 use tempfile::NamedTempFile;
+use winnow::{
+    ascii::escaped_transform,
+    combinator::{alt, cut_err, delimited, eof, opt, preceded, repeat, trace},
+    token::{take_till, take_until, take_while},
+    PResult, Parser,
+};
 
 use crate::{
     debug, eyre, info,
@@ -53,12 +59,54 @@ pub enum ConfigError {
     Editing,
 }
 
+#[allow(clippy::module_name_repetitions)]
+#[derive(Debug, Error)]
+pub enum EnvError {
+    #[error("No value found for variable")]
+    NotFound,
+    #[error("Non UTF-8 value found for variable: {0}")]
+    NotUtf8(String),
+    #[error("Error executing command [{0}]: {1}")]
+    Command(#[source] io::Error, String),
+}
+
+impl PartialEq for EnvError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::NotFound, Self::NotFound) => true,
+            (Self::NotUtf8(a), Self::NotUtf8(b)) => a == b,
+            (Self::Command(a, _), Self::Command(b, _)) => a.kind() == b.kind(),
+            _ => false,
+        }
+    }
+}
+impl Eq for EnvError {}
+
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 pub struct Config {
-    env: indexmap::IndexMap<String, String>,
+    env: Vec<(String, EnvValue)>,
     windows: Vec<Window>,
     run: Vec<Run>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EnvValue {
+    Value(String),
+    Dynamic(Vec<EnvVariable>),
+    Command {
+        program: OsString,
+        args: Vec<OsString>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EnvVariable {
+    Value(String),
+    Expand {
+        key: String,
+        default: Option<EnvValue>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -121,6 +169,10 @@ impl Config {
     }
 
     pub fn validate(self, root_dir: &Path) -> Result<Init> {
+        self.validate_with(root_dir, |k| env::var(k).is_ok())
+    }
+
+    fn validate_with(self, root_dir: &Path, root_env: impl Fn(&str) -> bool) -> Result<Init> {
         let run = self
             .run
             .into_iter()
@@ -138,9 +190,19 @@ impl Config {
             .map(|(idx, window)| Self::validate_config_window(root_dir, idx, window))
             .collect::<Result<_>>()?;
 
-        let env = self.env.into_iter().collect();
+        let mut new_keys = HashSet::new();
+        self.env.iter().try_for_each(|(k, v)| {
+            v.validate(&|k| new_keys.contains(k) || root_env(k))
+                .map(|()| {
+                    let _ = new_keys.insert(k.as_str());
+                })
+        })?;
 
-        let action = Init { env, run, windows };
+        let action = Init {
+            env: self.env,
+            run,
+            windows,
+        };
         Ok(action)
     }
 
@@ -403,6 +465,206 @@ impl Config {
     }
 }
 
+impl EnvValue {
+    fn validate(&self, has_key: &impl Fn(&str) -> bool) -> Result<(), EnvError> {
+        match self {
+            Self::Value(..) => Ok(()),
+            Self::Command { .. } => {
+                // TODO: check that the command exists (which)
+                Ok(())
+            }
+            Self::Dynamic(items) => {
+                for item in items {
+                    match item {
+                        EnvVariable::Value(..) => {}
+                        EnvVariable::Expand { key, default } => {
+                            if !has_key(key) {
+                                return Err(EnvError::NotFound);
+                            }
+                            if let Some(default) = default {
+                                default.validate(has_key)?;
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub fn resolve<'env, E>(
+        self,
+        get_env: &impl Fn(&str) -> Result<String, env::VarError>,
+        add_env: &'env E,
+    ) -> Result<String, EnvError>
+    where
+        &'env E: IntoIterator<Item = (&'env String, &'env String)>,
+    {
+        match self {
+            Self::Value(v) => Ok(v),
+            Self::Dynamic(parts) => parts
+                .into_iter()
+                .map(|part| match part {
+                    EnvVariable::Value(v) => Ok(v),
+                    EnvVariable::Expand { key, default } => match get_env(&key) {
+                        Ok(v) => Ok(v),
+                        Err(env::VarError::NotPresent) => default
+                            .map_or(Err(EnvError::NotFound), |default| {
+                                default.resolve(get_env, add_env)
+                            }),
+                        Err(env::VarError::NotUnicode(v)) => {
+                            Err(EnvError::NotUtf8(v.to_string_lossy().into_owned()))
+                        }
+                    },
+                })
+                .collect::<Result<String, _>>(),
+            Self::Command { program, args } => {
+                let output = Command::new(program)
+                    .args(args)
+                    .envs(add_env.into_iter())
+                    .output()
+                    .map_err(|e| EnvError::Command(e, String::new()))?;
+                if !output.status.success() {
+                    return Err(EnvError::Command(
+                        io::Error::new(io::ErrorKind::Other, "Command failed"),
+                        String::from_utf8_lossy(&output.stderr).into_owned(),
+                    ));
+                }
+                String::from_utf8(output.stdout).map_err(|e| {
+                    EnvError::NotUtf8(String::from_utf8_lossy(&e.into_bytes()).into_owned())
+                })
+            }
+        }
+    }
+}
+
+impl EnvValue {
+    pub fn parse(s: &str) -> Result<Self> {
+        Self::parse_root.parse(s).map_err(|e| eyre!(e.to_string()))
+    }
+
+    fn parse_root(input: &mut &str) -> PResult<Self> {
+        trace(
+            "root",
+            alt((
+                delimited("$(", Self::parse_command, ")"),
+                (Self::parse_value, eof).map(|(res, _)| Self::Value(res)),
+                Self::parse_expand,
+            )),
+        )
+        .parse_next(input)
+    }
+
+    fn parse_top(input: &mut &str) -> PResult<Self> {
+        trace(
+            "top",
+            alt((
+                delimited("$(", Self::parse_command, ")"),
+                (Self::parse_value).map(Self::Value),
+                Self::parse_expand,
+            )),
+        )
+        .parse_next(input)
+    }
+
+    fn parse_command(input: &mut &str) -> PResult<Self> {
+        trace(
+            "command",
+            take_until(1.., ")").verify_map(|cmd| {
+                let (program, args) = Self::split_cmd(cmd)?;
+                Some(Self::Command { program, args })
+            }),
+        )
+        .parse_next(input)
+    }
+
+    fn split_cmd(input: &str) -> Option<(OsString, Vec<OsString>)> {
+        let mut shl = shlex::Shlex::new(input);
+        let mut args = shl.by_ref().map(OsString::from).collect::<Vec<_>>();
+        if shl.had_error || args.is_empty() {
+            return None;
+        }
+        let program = args.remove(0);
+        Some((program, args))
+    }
+
+    fn parse_expand(input: &mut &str) -> PResult<Self> {
+        repeat(1.., Self::parse_expansion)
+            .map(Self::Dynamic)
+            .parse_next(input)
+    }
+
+    fn parse_expansion(input: &mut &str) -> PResult<EnvVariable> {
+        trace(
+            "expansion",
+            alt((
+                delimited(
+                    "${",
+                    trace(
+                        "brace_expand",
+                        cut_err((Self::parse_key, Self::parse_default)).map(|(k, d)| {
+                            EnvVariable::Expand {
+                                key: k.to_owned(),
+                                default: d,
+                            }
+                        }),
+                    ),
+                    "}",
+                ),
+                preceded(
+                    "$",
+                    trace(
+                        "inline_expand",
+                        cut_err(Self::parse_key).map(|k| EnvVariable::Expand {
+                            key: k.to_owned(),
+                            default: None,
+                        }),
+                    ),
+                ),
+                Self::parse_value.map(EnvVariable::Value),
+            )),
+        )
+        .parse_next(input)
+    }
+
+    fn parse_default(input: &mut &str) -> PResult<Option<Self>> {
+        trace("default", opt(preceded(":-", cut_err(Self::parse_top)))).parse_next(input)
+    }
+
+    fn parse_key<'s>(input: &mut &'s str) -> PResult<&'s str> {
+        trace(
+            "key",
+            (
+                take_while(1.., |c: char| c.is_ascii_alphabetic() || c == '_'),
+                take_while(0.., |c: char| c.is_ascii_alphanumeric() || c == '_'),
+            )
+                .recognize(),
+        )
+        .parse_next(input)
+    }
+
+    fn parse_value(input: &mut &str) -> PResult<String> {
+        trace(
+            "value",
+            escaped_transform(
+                take_till(1.., |c| c == '$' || c == '\\' || c == '{' || c == '}'),
+                '\\',
+                alt((
+                    '\\'.value("\\"),
+                    '$'.value("$"),
+                    '{'.value("{"),
+                    '}'.value("}"),
+                    'n'.value("\n"),
+                    'r'.value("\r"),
+                    't'.value("\t"),
+                )),
+            )
+            .verify(|value: &str| !value.is_empty()),
+        )
+        .parse_next(input)
+    }
+}
+
 impl<'de> Deserialize<'de> for Config {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -432,7 +694,7 @@ impl<'de> Deserialize<'de> for Config {
                             if !mem::take(&mut free[0]) {
                                 return Err(A::Error::duplicate_field("env"));
                             }
-                            config.env = map.next_value()?;
+                            config.env = map.next_value::<EnvSection>()?.0;
                         }
                         "window" | "windows" => {
                             if !mem::take(&mut free[1]) {
@@ -621,11 +883,246 @@ impl<'de> Deserialize<'de> for OnExit {
     }
 }
 
+impl<'de> Deserialize<'de> for EnvValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Vis;
+        impl<'de> Visitor<'de> for Vis {
+            type Value = EnvValue;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a valid `env` value")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                EnvValue::parse(v).map_err(|e| E::custom(format!("Invalid env value: {e}")))
+            }
+        }
+
+        deserializer.deserialize_str(Vis)
+    }
+}
+
+struct EnvSection(Vec<(String, EnvValue)>);
+
+impl<'de> Deserialize<'de> for EnvSection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Vis;
+        impl<'de> Visitor<'de> for Vis {
+            type Value = EnvSection;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a valid `env` section")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut env = Vec::new();
+                while let Some((key, value)) = map.next_entry()? {
+                    env.push((key, value));
+                }
+                Ok(EnvSection(env))
+            }
+        }
+
+        deserializer.deserialize_map(Vis)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use indexmap::IndexMap;
-
     use super::*;
+
+    #[test]
+    fn parse_env_value() {
+        test_parse_env_value("foo", "foo");
+        test_parse_env_value("   foo   ", "   foo   ");
+        test_parse_env_value("foo bar", "foo bar");
+        test_parse_env_value("   'foo' \"bar\"   ", "   'foo' \"bar\"   ");
+    }
+
+    #[test]
+    fn parse_env_value_escaped() {
+        test_parse_env_value(r"\$FOO", r"$FOO");
+        test_parse_env_value(r"\\FOO", r"\FOO");
+        test_parse_env_value(r"\{FOO", r"{FOO");
+        test_parse_env_value(r"\}FOO", r"}FOO");
+        test_parse_env_value(r"\rFOO", "\rFOO");
+        test_parse_env_value(r"\tFOO", "\tFOO");
+        test_parse_env_value(r"\nFOO", "\nFOO");
+    }
+
+    #[test]
+    fn parse_empty_input() {
+        let value = EnvValue::parse("");
+        assert!(value.is_err());
+    }
+
+    fn test_parse_env_value(input: &str, expected: &str) {
+        let value = EnvValue::parse(input).unwrap();
+        assert_eq!(value, EnvValue::Value(expected.to_owned()));
+    }
+
+    #[test]
+    fn parse_env_expansion() {
+        let value = EnvValue::parse("${FOO}").unwrap();
+        assert_eq!(
+            value,
+            EnvValue::Dynamic(vec![EnvVariable::Expand {
+                key: "FOO".to_owned(),
+                default: None,
+            }])
+        );
+    }
+
+    #[test]
+    fn parse_env_expansion_with_default() {
+        let value = EnvValue::parse("${FOO:-bar}").unwrap();
+        assert_eq!(
+            value,
+            EnvValue::Dynamic(vec![EnvVariable::Expand {
+                key: "FOO".to_owned(),
+                default: Some(EnvValue::Value("bar".to_owned())),
+            }])
+        );
+    }
+
+    #[test]
+    fn parse_env_expansion_default_other_var() {
+        let value = EnvValue::parse("${FOO:-$BAR}").unwrap();
+        assert_eq!(
+            value,
+            EnvValue::Dynamic(vec![EnvVariable::Expand {
+                key: "FOO".to_owned(),
+                default: Some(EnvValue::Dynamic(vec![EnvVariable::Expand {
+                    key: "BAR".to_owned(),
+                    default: None
+                }])),
+            }])
+        );
+    }
+
+    #[test]
+    fn parse_env_expansion_no_braces() {
+        let value = EnvValue::parse("$FOO").unwrap();
+        assert_eq!(
+            value,
+            EnvValue::Dynamic(vec![EnvVariable::Expand {
+                key: "FOO".to_owned(),
+                default: None,
+            }])
+        );
+    }
+
+    #[test]
+    fn parse_env_expansion_mixed() {
+        let value = EnvValue::parse("${FOO}bar${BAZ}").unwrap();
+        assert_eq!(
+            value,
+            EnvValue::Dynamic(vec![
+                EnvVariable::Expand {
+                    key: "FOO".to_owned(),
+                    default: None,
+                },
+                EnvVariable::Value("bar".to_owned()),
+                EnvVariable::Expand {
+                    key: "BAZ".to_owned(),
+                    default: None,
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_env_expansion_dollar_escaped() {
+        let value = EnvValue::parse(r"\$FOO").unwrap();
+        assert_eq!(value, EnvValue::Value("$FOO".to_owned()));
+    }
+
+    #[test]
+    fn parse_env_expansion_backslash_escaped() {
+        let value = EnvValue::parse(r"\\$FOO").unwrap();
+        assert_eq!(
+            value,
+            EnvValue::Dynamic(vec![
+                EnvVariable::Value("\\".to_owned()),
+                EnvVariable::Expand {
+                    key: "FOO".to_owned(),
+                    default: None
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_env_value_command() {
+        let value = EnvValue::parse("$(echo foo)").unwrap();
+        assert_eq!(
+            value,
+            EnvValue::Command {
+                program: "echo".into(),
+                args: vec!["foo".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_env_value_command_with_args() {
+        let value = EnvValue::parse("$(echo foo bar)").unwrap();
+        assert_eq!(
+            value,
+            EnvValue::Command {
+                program: "echo".into(),
+                args: vec!["foo".into(), "bar".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_env_value_command_with_single_quotes() {
+        let value = EnvValue::parse("$(echo 'foo bar')").unwrap();
+        assert_eq!(
+            value,
+            EnvValue::Command {
+                program: "echo".into(),
+                args: vec!["foo bar".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_env_value_command_with_double_quotes() {
+        let value = EnvValue::parse(r#"$(echo "foo bar")"#).unwrap();
+        assert_eq!(
+            value,
+            EnvValue::Command {
+                program: "echo".into(),
+                args: vec!["foo bar".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_env_value_command_with_escaped_double_quotes() {
+        let value = EnvValue::parse(r#"$(echo "foo \"bar\"")"#).unwrap();
+        assert_eq!(
+            value,
+            EnvValue::Command {
+                program: "echo".into(),
+                args: vec!["foo \"bar\"".into()]
+            }
+        );
+    }
 
     #[test]
     fn toml_format() {
@@ -648,10 +1145,10 @@ mod tests {
         assert_eq!(
             config,
             Config {
-                env: IndexMap::from_iter([
-                    ("FOO".to_owned(), "bar".to_owned()),
-                    ("BAZ".to_owned(), "qux".to_owned()),
-                ]),
+                env: vec![
+                    ("FOO".to_owned(), EnvValue::Value("bar".to_owned())),
+                    ("BAZ".to_owned(), EnvValue::Value("qux".to_owned())),
+                ],
                 run: vec![Run {
                     command: "echo hello".to_owned()
                 }],

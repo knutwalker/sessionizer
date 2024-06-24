@@ -10,13 +10,13 @@ use color_eyre::{eyre::Context as _, Section as _, SectionExt as _};
 use onlyerror::Error;
 
 use crate::{
-    config::{Config, ConfigError},
+    config::{Config, ConfigError, EnvValue},
     eyre, trace, Result,
 };
 
 #[derive(Debug, Clone, Default)]
 pub struct Init {
-    pub env: Vec<(String, String)>,
+    pub env: Vec<(String, EnvValue)>,
     pub run: Vec<String>,
     pub windows: Vec<SpawnWindow>,
 }
