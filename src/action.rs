@@ -1,8 +1,11 @@
-use std::{env, path::PathBuf, process::Command};
+use std::{
+    collections::HashMap,
+    env::{self, VarError},
+    path::PathBuf,
+    process::Command,
+};
 
 use color_eyre::{Section as _, SectionExt as _};
-use indexmap::IndexMap;
-use onlyerror::Error;
 
 use crate::{debug, eyre, Init, Result, WindowCommand};
 
@@ -18,30 +21,18 @@ pub enum Action {
     },
 }
 
-#[allow(clippy::module_name_repetitions)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Error)]
-pub enum ActionError {
-    #[error("The variable is not defined")]
-    VarNotFound,
-    #[error("The variable is not valid utf-8")]
-    NotUtf8,
-}
-
-pub fn cmd(action: &Action) -> Result<Command> {
+pub fn cmd(action: Action) -> Result<Command> {
     build_command(action, env::var_os("TMUX").is_some(), use_std_env)
 }
 
-fn use_std_env(k: &str) -> Result<String, ActionError> {
-    env::var(k).map_err(|e| match e {
-        env::VarError::NotPresent => ActionError::VarNotFound,
-        env::VarError::NotUnicode(_) => ActionError::NotUtf8,
-    })
+fn use_std_env(k: &str) -> Result<String, VarError> {
+    env::var(k)
 }
 
 fn build_command(
-    action: &Action,
+    action: Action,
     inside_tmux: bool,
-    root_env: impl Fn(&str) -> Result<String, ActionError>,
+    root_env: impl Fn(&str) -> Result<String, VarError>,
 ) -> Result<Command> {
     debug!(?action, "Running action on a new session");
 
@@ -62,27 +53,43 @@ fn build_command(
             root,
             on_init,
         } => {
-            let get_env = |k: &str| root_env(k).map(Some);
-            let cmd = cmd.args(["new-session", "-d", "-s", name, "-c"]).arg(root);
+            let cmd = cmd
+                .args(["new-session", "-d", "-s", &name, "-c"])
+                .arg(&root)
+                .arg("-e")
+                .arg(format!("SESSION_ROOT={}", root.display()))
+                .arg("-e")
+                .arg(format!("SESSION_NAME={name}"));
 
-            let mut env = IndexMap::with_capacity(2 + on_init.env.len());
-            let _ = env.insert("SESSION_ROOT", root.to_string_lossy().into_owned());
-            let _ = env.insert("SESSION_NAME", name.clone());
-            for (k, v) in &on_init.env {
-                let v = shellexpand::env_with_context(v.as_str(), |k| {
-                    env.get(k).cloned().map(Some).map_or_else(|| get_env(k), Ok)
-                })
-                .map_err(|e| {
-                    eyre!(e.cause)
-                        .section(e.var_name.header("Variable:"))
-                        .note("You can provide a default value by using ${VAR_NAME:default_value}")
-                })?;
-                let _ = env.insert(k.as_str(), v.into_owned());
+            let mut env = HashMap::with_capacity(on_init.env.len());
+
+            for (k, v) in on_init.env {
+                let v = v.resolve(
+                    &|k| match k {
+                        "SESSION_NAME" => Ok(name.clone()),
+                        "SESSION_ROOT" => Ok(root.display().to_string()),
+                        _ => env
+                            .get(k)
+                            .cloned()
+                            .ok_or(VarError::NotPresent)
+                            .or_else(|_| root_env(k)),
+                    },
+                    &env,
+                );
+
+                let v = match v {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return Err(eyre!(e).section(k.header("Variable:")).note(
+                            "You can provide a default value by using ${VAR_NAME:-default_value}",
+                        ));
+                    }
+                };
+                let _ = cmd.arg("-e").arg(format!("{k}={v}"));
+                let _ = env.insert(k, v);
             }
 
-            for (key, value) in env {
-                let _ = cmd.arg("-e").arg(format!("{key}={value}"));
-            }
+            drop(env);
 
             let _ = cmd.arg(";");
             let session_id = format!("={name}");
@@ -138,12 +145,15 @@ fn build_command(
 
 #[cfg(test)]
 mod tests {
-    use crate::init::SpawnWindow;
+    use crate::{
+        config::{EnvError, EnvValue},
+        init::SpawnWindow,
+    };
 
     use super::*;
 
-    fn command(action: &Action, inside_tmux: bool) -> Command {
-        build_command(action, inside_tmux, |_| Err(ActionError::VarNotFound)).unwrap()
+    fn command(action: Action, inside_tmux: bool) -> Command {
+        build_command(action, inside_tmux, |_| Err(VarError::NotPresent)).unwrap()
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -167,7 +177,7 @@ mod tests {
         };
 
         for (inside_tmux, expected) in [(true, "switch-client"), (false, "attach-session")] {
-            let cmd = command(&action, inside_tmux);
+            let cmd = command(action.clone(), inside_tmux);
 
             let expected = [
                 "new-session",
@@ -195,7 +205,7 @@ mod tests {
             name: "test".to_owned(),
         };
 
-        let cmd = command(&action, inside_tmux);
+        let cmd = command(action, inside_tmux);
 
         let expected = if inside_tmux {
             "switch-client"
@@ -223,12 +233,12 @@ mod tests {
             name: "test".to_owned(),
             root: PathBuf::from("/tmp"),
             on_init: Init {
-                env: vec![("FOO".to_owned(), "bar".to_owned())],
+                env: vec![("FOO".to_owned(), EnvValue::Value("bar".to_owned()))],
                 ..Default::default()
             },
         };
 
-        let cmd = command(&action, true);
+        let cmd = command(action, true);
 
         let expected = [
             "new-session",
@@ -259,17 +269,20 @@ mod tests {
             root: PathBuf::from("/tmp"),
             on_init: Init {
                 env: vec![
-                    ("FOO".to_owned(), "let's $SESSIONIZER_TEST".to_owned()),
+                    (
+                        "FOO".to_owned(),
+                        EnvValue::parse("let's $SESSIONIZER_TEST").unwrap(),
+                    ),
                     (
                         "BAR".to_owned(),
-                        "Can also use previously defined vars: '${FOO}'".to_owned(),
+                        EnvValue::parse("Can also use previously defined vars: '${FOO}'").unwrap(),
                     ),
                 ],
                 ..Default::default()
             },
         };
 
-        let cmd = build_command(&action, true, |k| {
+        let cmd = build_command(action, true, |k| {
             assert_eq!(k, "SESSIONIZER_TEST");
             Ok("frobnicate".to_owned())
         })
@@ -305,15 +318,18 @@ mod tests {
             name: "test".to_owned(),
             root: PathBuf::from("/tmp"),
             on_init: Init {
-                env: vec![("FOO".to_owned(), "$SESSIONIZER_TEST_UNSET".to_owned())],
+                env: vec![(
+                    "FOO".to_owned(),
+                    EnvValue::parse("$SESSIONIZER_TEST_UNSET").unwrap(),
+                )],
                 ..Default::default()
             },
         };
 
-        let err = build_command(&action, true, |_| Err(ActionError::VarNotFound)).unwrap_err();
-        let error = err.downcast::<ActionError>().unwrap();
+        let err = build_command(action, true, |_| Err(VarError::NotPresent)).unwrap_err();
+        let error = err.downcast::<EnvError>().unwrap();
 
-        assert_eq!(error, ActionError::VarNotFound);
+        assert_eq!(error, EnvError::NotFound);
     }
 
     #[test]
@@ -327,7 +343,7 @@ mod tests {
             },
         };
 
-        let cmd = command(&action, true);
+        let cmd = command(action, true);
 
         let expected = [
             "new-session",
@@ -370,7 +386,7 @@ mod tests {
             },
         };
 
-        let cmd = command(&action, true);
+        let cmd = command(action, true);
 
         let expected = [
             "new-session",
@@ -412,7 +428,7 @@ mod tests {
             },
         };
 
-        let cmd = command(&action, true);
+        let cmd = command(action, true);
 
         let expected = [
             "new-session",
@@ -459,7 +475,7 @@ mod tests {
             },
         };
 
-        let cmd = command(&action, true);
+        let cmd = command(action, true);
 
         let expected = [
             "new-session",
@@ -510,7 +526,7 @@ mod tests {
             },
         };
 
-        let cmd = command(&action, true);
+        let cmd = command(action, true);
 
         let expected = [
             "new-session",
@@ -556,7 +572,7 @@ mod tests {
             },
         };
 
-        let cmd = command(&action, true);
+        let cmd = command(action, true);
 
         let expected = if remain { "on" } else { "off" };
         let expected = [
