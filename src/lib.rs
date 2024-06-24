@@ -23,6 +23,7 @@ use crate::{
 
 mod action;
 mod args;
+mod config;
 mod entry;
 mod init;
 mod project;

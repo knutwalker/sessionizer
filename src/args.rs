@@ -2,7 +2,7 @@ use std::{env, fmt, io, iter};
 
 use clap::{value_parser, Arg, ArgAction, ArgGroup, ArgMatches, Command};
 
-use crate::{debug, init::InitError};
+use crate::{config::ConfigError, debug};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -277,11 +277,11 @@ impl Action {
             .issue_filter(|o| match o {
                 ErrorKind::NonRecoverable(_) => true,
                 ErrorKind::Recoverable(e) => iter::successors(Some(e), |e| e.source())
-                    .find_map(|e| e.downcast_ref::<InitError>())
+                    .find_map(|e| e.downcast_ref::<ConfigError>())
                     .map_or(true, |e| {
                         matches!(
                             e,
-                            InitError::FileReading(_) | InitError::InvalidWindowDir(_)
+                            ConfigError::FileReading(_) | ConfigError::InvalidWindowDir(_)
                         )
                     }),
             })
