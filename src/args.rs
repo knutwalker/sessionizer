@@ -67,9 +67,9 @@ impl Action {
         let app = Self::command().color(app_color());
         let mut matches = app.get_matches();
 
-        let color = Self::init_color(&mut matches);
-        Self::init_tracing(&mut matches, color.ansi_color());
-        let args = Self::from_matches(&mut matches, color.color());
+        let color = Self::init_color(&mut matches).ansi_color();
+        Self::init_tracing(&mut matches, color);
+        let args = Self::from_matches(&mut matches, color);
 
         debug!(?color, ?args);
 
@@ -220,15 +220,13 @@ impl Action {
     fn init_color(matches: &mut ArgMatches) -> concolor::Color {
         let color = color_from_matches(matches);
         concolor::set(color);
-        concolor::get(concolor::Stream::Either)
+        concolor::get(concolor::Stream::Stderr)
     }
 
     fn init_tracing(matches: &mut ArgMatches, color: bool) {
         use color_eyre::ErrorKind;
         use tracing_error::ErrorLayer;
-        use tracing_subscriber::{
-            fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _, EnvFilter,
-        };
+        use tracing_subscriber::{fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
         let filter = verbosity_from_matches(matches);
         let level = if cfg!(debug_assertions) { "full" } else { "0" };
@@ -245,13 +243,10 @@ impl Action {
             .with_file(true)
             .with_line_number(true)
             .with_writer(io::stderr)
-            .with_ansi(true);
-
-        let filter_layer =
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter));
+            .with_ansi(color);
 
         tracing_subscriber::registry()
-            .with(filter_layer)
+            .with(filter)
             .with(fmt_layer)
             .with(ErrorLayer::default())
             .init();
@@ -355,7 +350,7 @@ impl Action {
 }
 
 fn app_color() -> clap::ColorChoice {
-    let color = concolor::get(concolor::Stream::Either);
+    let color = concolor::get(concolor::Stream::Stdout);
     if color.ansi_color() {
         clap::ColorChoice::Always
     } else {
@@ -383,22 +378,29 @@ fn color_from_matches(matches: &mut ArgMatches) -> concolor::ColorChoice {
     }
 }
 
-fn verbosity_from_matches(matches: &mut ArgMatches) -> &'static str {
+fn verbosity_from_matches(matches: &mut ArgMatches) -> tracing_subscriber::filter::Targets {
+    use tracing::level_filters::LevelFilter;
+
     let verbose = matches.remove_one::<u8>("verbose").expect("count type");
     let quiet = matches.remove_one::<u8>("quiet").expect("count type");
 
     let verbosity = i32::from(verbose) - i32::from(quiet);
     let verbosity = 2_u32.saturating_add_signed(verbosity);
+    let targets = tracing_subscriber::filter::Targets::default();
     match verbosity {
-        0 => "off",
-        1 => "error",
-        2 => "warn",
-        3 => concat!(env!("CARGO_PKG_NAME"), "=info"),
-        4 => concat!(env!("CARGO_PKG_NAME"), "=debug"),
-        5 => concat!(env!("CARGO_PKG_NAME"), "=trace"),
-        6 => concat!(env!("CARGO_PKG_NAME"), "=trace,info"),
-        7 => concat!(env!("CARGO_PKG_NAME"), "=trace,debug"),
-        _ => "trace",
+        0 => targets.with_default(LevelFilter::OFF),
+        1 => targets.with_default(LevelFilter::ERROR),
+        2 => targets.with_default(LevelFilter::WARN),
+        3 => targets.with_target(env!("CARGO_PKG_NAME"), LevelFilter::INFO),
+        4 => targets.with_target(env!("CARGO_PKG_NAME"), LevelFilter::DEBUG),
+        5 => targets.with_target(env!("CARGO_PKG_NAME"), LevelFilter::TRACE),
+        6 => targets
+            .with_target(env!("CARGO_PKG_NAME"), LevelFilter::TRACE)
+            .with_default(LevelFilter::INFO),
+        7 => targets
+            .with_target(env!("CARGO_PKG_NAME"), LevelFilter::TRACE)
+            .with_default(LevelFilter::DEBUG),
+        _ => targets.with_default(LevelFilter::TRACE),
     }
 }
 
@@ -465,6 +467,7 @@ impl Info {
 #[cfg(test)]
 mod tests {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
+    use tracing::Level;
 
     use super::*;
 
@@ -521,7 +524,8 @@ mod tests {
     fn test_single_verbosity_flag(flag: &str) {
         let mut matches = Action::get_matches([flag]).unwrap();
         let verbosity = verbosity_from_matches(&mut matches);
-        assert_eq!(verbosity, "sessionizer=info");
+        assert!(verbosity.would_enable(env!("CARGO_PKG_NAME"), &Level::INFO));
+        assert!(!verbosity.would_enable(env!("CARGO_PKG_NAME"), &Level::DEBUG));
     }
 
     #[test]
@@ -537,55 +541,192 @@ mod tests {
     fn test_single_quiet_flag(flag: &str) {
         let mut matches = Action::get_matches([flag]).unwrap();
         let verbosity = verbosity_from_matches(&mut matches);
-        assert_eq!(verbosity, "error");
+        assert!(verbosity.would_enable(env!("CARGO_PKG_NAME"), &Level::ERROR));
+        assert!(!verbosity.would_enable(env!("CARGO_PKG_NAME"), &Level::WARN));
     }
 
     #[test]
     fn multiple_verbosity_long_flag() {
-        test_multiple_verbosity_flags::<1>("--verbose", "sessionizer=info");
-        test_multiple_verbosity_flags::<2>("--verbose", "sessionizer=debug");
-        test_multiple_verbosity_flags::<3>("--verbose", "sessionizer=trace");
-        test_multiple_verbosity_flags::<4>("--verbose", "sessionizer=trace,info");
-        test_multiple_verbosity_flags::<5>("--verbose", "sessionizer=trace,debug");
-        test_multiple_verbosity_flags::<6>("--verbose", "trace");
-        test_multiple_verbosity_flags::<7>("--verbose", "trace");
+        test_level_flags::<1>(
+            "--verbose",
+            &[
+                ("sessionizer", Level::INFO, true),
+                ("sessionizer", Level::DEBUG, false),
+            ],
+        );
+
+        test_level_flags::<2>(
+            "--verbose",
+            &[
+                ("sessionizer", Level::DEBUG, true),
+                ("sessionizer", Level::TRACE, false),
+            ],
+        );
+
+        test_level_flags::<3>(
+            "--verbose",
+            &[
+                ("sessionizer", Level::TRACE, true),
+                ("global", Level::INFO, false),
+            ],
+        );
+
+        test_level_flags::<4>(
+            "--verbose",
+            &[
+                ("sessionizer", Level::TRACE, true),
+                ("global", Level::INFO, true),
+                ("global", Level::DEBUG, false),
+            ],
+        );
+
+        test_level_flags::<5>(
+            "--verbose",
+            &[
+                ("sessionizer", Level::TRACE, true),
+                ("global", Level::DEBUG, true),
+                ("global", Level::TRACE, false),
+            ],
+        );
+
+        test_level_flags::<6>(
+            "--verbose",
+            &[
+                ("sessionizer", Level::TRACE, true),
+                ("global", Level::TRACE, true),
+            ],
+        );
+
+        test_level_flags::<7>(
+            "--verbose",
+            &[
+                ("sessionizer", Level::TRACE, true),
+                ("global", Level::TRACE, true),
+            ],
+        );
     }
 
     #[test]
     fn multiple_verbosity_short_flag() {
-        test_multiple_verbosity_flags::<1>("-v", "sessionizer=info");
-        test_multiple_verbosity_flags::<2>("-v", "sessionizer=debug");
-        test_multiple_verbosity_flags::<3>("-v", "sessionizer=trace");
-        test_multiple_verbosity_flags::<4>("-v", "sessionizer=trace,info");
-        test_multiple_verbosity_flags::<5>("-v", "sessionizer=trace,debug");
-        test_multiple_verbosity_flags::<6>("-v", "trace");
-        test_multiple_verbosity_flags::<7>("-v", "trace");
-    }
+        test_level_flags::<1>(
+            "-v",
+            &[
+                ("sessionizer", Level::INFO, true),
+                ("sessionizer", Level::DEBUG, false),
+            ],
+        );
 
-    fn test_multiple_verbosity_flags<const REPEAT: usize>(flag: &str, expected: &str) {
-        let mut matches = Action::get_matches([flag; REPEAT]).unwrap();
-        let verbosity = verbosity_from_matches(&mut matches);
-        assert_eq!(verbosity, expected);
+        test_level_flags::<2>(
+            "-v",
+            &[
+                ("sessionizer", Level::DEBUG, true),
+                ("sessionizer", Level::TRACE, false),
+            ],
+        );
+
+        test_level_flags::<3>(
+            "-v",
+            &[
+                ("sessionizer", Level::TRACE, true),
+                ("global", Level::INFO, false),
+            ],
+        );
+
+        test_level_flags::<4>(
+            "-v",
+            &[
+                ("sessionizer", Level::TRACE, true),
+                ("global", Level::INFO, true),
+                ("global", Level::DEBUG, false),
+            ],
+        );
+
+        test_level_flags::<5>(
+            "-v",
+            &[
+                ("sessionizer", Level::TRACE, true),
+                ("global", Level::DEBUG, true),
+                ("global", Level::TRACE, false),
+            ],
+        );
+
+        test_level_flags::<6>(
+            "-v",
+            &[
+                ("sessionizer", Level::TRACE, true),
+                ("global", Level::TRACE, true),
+            ],
+        );
+
+        test_level_flags::<7>(
+            "-v",
+            &[
+                ("sessionizer", Level::TRACE, true),
+                ("global", Level::TRACE, true),
+            ],
+        );
     }
 
     #[test]
     fn multiple_quiet_long_flag() {
-        test_multiple_quiet_flags::<1>("--quiet", "error");
-        test_multiple_quiet_flags::<2>("--quiet", "off");
-        test_multiple_quiet_flags::<3>("--quiet", "off");
+        test_level_flags::<1>(
+            "--quiet",
+            &[
+                ("sessionizer", Level::ERROR, true),
+                ("sessionizer", Level::WARN, false),
+            ],
+        );
+
+        test_level_flags::<2>(
+            "--quiet",
+            &[
+                ("sessionizer", Level::ERROR, false),
+                ("sessionizer", Level::WARN, false),
+            ],
+        );
+
+        test_level_flags::<3>(
+            "--quiet",
+            &[
+                ("sessionizer", Level::ERROR, false),
+                ("sessionizer", Level::WARN, false),
+            ],
+        );
     }
 
     #[test]
     fn multiple_quiet_short_flag() {
-        test_multiple_quiet_flags::<1>("-q", "error");
-        test_multiple_quiet_flags::<2>("-q", "off");
-        test_multiple_quiet_flags::<3>("-q", "off");
+        test_level_flags::<1>(
+            "-q",
+            &[
+                ("sessionizer", Level::ERROR, true),
+                ("sessionizer", Level::WARN, false),
+            ],
+        );
+
+        test_level_flags::<2>(
+            "-q",
+            &[
+                ("sessionizer", Level::ERROR, false),
+                ("sessionizer", Level::WARN, false),
+            ],
+        );
+
+        test_level_flags::<3>(
+            "-q",
+            &[
+                ("sessionizer", Level::ERROR, false),
+                ("sessionizer", Level::WARN, false),
+            ],
+        );
     }
 
-    fn test_multiple_quiet_flags<const REPEAT: usize>(flag: &str, expected: &str) {
+    fn test_level_flags<const REPEAT: usize>(flag: &str, expected: &[(&str, Level, bool)]) {
         let mut matches = Action::get_matches([flag; REPEAT]).unwrap();
         let verbosity = verbosity_from_matches(&mut matches);
-        assert_eq!(verbosity, expected);
+        for (name, level, enabled) in expected {
+            assert_eq!(verbosity.would_enable(name, level), *enabled);
+        }
     }
 
     fn parse_search<const N: usize>(args: [&str; N]) -> Search {
