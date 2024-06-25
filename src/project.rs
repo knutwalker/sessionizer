@@ -57,6 +57,10 @@ pub enum ParsePathError {
     PathNotAbsolute,
     #[error("Unknown home directory to do tilde expansion")]
     UnknownHomeDirectory,
+    #[error("Home expansion is only supported with a username")]
+    HomeWithUsername,
+    #[error("Unknown error")]
+    Unknown,
 }
 
 pub fn find_projects(tx: &SyncSender<Entry>) -> Result<(), ProjectError> {
@@ -188,6 +192,118 @@ fn parse_paths(
         .collect::<Result<Vec<_>, _>>()
 }
 
+fn parse_path2(path: &Path, auto_star: bool) -> Result<SearchPath, ParsePathError> {
+    use winnow::{
+        combinator::{alt, delimited, eof, fail, repeat, terminated, trace},
+        token::take_until,
+        PResult, Parser,
+    };
+
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    enum Tok2<'s> {
+        Home(&'s Path),
+        Regular(&'s [u8]),
+        Current,
+        Underscore,
+        Star,
+    }
+
+    impl AsRef<OsStr> for Tok2<'_> {
+        fn as_ref(&self) -> &OsStr {
+            match self {
+                Self::Home(path) => path.as_os_str(),
+                Self::Regular(s) => OsStr::from_bytes(s),
+                Self::Current => OsStr::new("."),
+                Self::Underscore => OsStr::new("_"),
+                Self::Star => OsStr::new("*"),
+            }
+        }
+    }
+
+    const SEP: &[u8] = std::path::MAIN_SEPARATOR_STR.as_bytes();
+
+    fn path_segment<'s>(bytes: &mut &'s [u8]) -> PResult<&'s [u8]> {
+        trace("path_segment", take_until(1.., SEP)).parse_next(bytes)
+    }
+
+    fn separator(bytes: &mut &[u8]) -> PResult<Option<()>> {
+        trace("separator", alt((SEP.value(Some(())), eof.value(None)))).parse_next(bytes)
+    }
+
+    fn path_token<'s>(bytes: &mut &'s [u8]) -> PResult<Tok2<'s>> {
+        trace(
+            "path_token",
+            alt((
+                terminated(b"_", separator).value(Tok2::Underscore),
+                terminated(b"*", separator).value(Tok2::Star),
+                terminated(b".", separator).value(Tok2::Current),
+                terminated(br"\_", separator).value(Tok2::Regular(b"_")),
+                terminated(br"\*", separator).value(Tok2::Regular(b"*")),
+                terminated(path_segment, separator).map(Tok2::Regular),
+            )),
+        )
+        .parse_next(bytes)
+    }
+
+    fn home(bytes: &mut &[u8]) -> PResult<&'static Path> {
+        trace(
+            "home",
+            delimited(b"~", path_segment, SEP).try_map(|username| {
+                if username.is_empty() {
+                    home_dir().ok_or(ParsePathError::UnknownHomeDirectory)
+                } else {
+                    Err(ParsePathError::HomeWithUsername)
+                }
+            }),
+        )
+        .parse_next(bytes)
+    }
+
+    fn full_path(bytes: &mut &[u8]) -> PResult<PathBuf> {
+        trace(
+            "full_path",
+            alt((
+                trace("root", SEP.value(Tok2::Regular(SEP))),
+                home.map(Tok2::Home),
+                fail,
+            ))
+            .flat_map(|root| {
+                trace(
+                    "non_root_path",
+                    repeat(0.., path_token).fold(
+                        {
+                            let len = bytes.len();
+                            move || {
+                                let mut path = PathBuf::with_capacity(len);
+                                path.push(root.as_ref());
+                                path
+                            }
+                        },
+                        |mut acc, token| {
+                            acc.push(token.as_ref());
+                            acc
+                        },
+                    ),
+                )
+            }),
+        )
+        .parse_next(bytes)
+    }
+
+    let bytes = path.as_os_str().as_bytes();
+    let res = dbg!(full_path.parse(bytes).map_err(|e| {
+        let cause = dbg!(dbg!(dbg!(&e).inner().cause())
+            .and_then(|e| e.downcast_ref::<ParsePathError>())
+            .copied());
+        cause.unwrap_or(ParsePathError::PathNotAbsolute)
+    }))?;
+
+    Ok(SearchPath {
+        path: res,
+        depth: 13..37,
+    })
+}
+
 fn parse_path(path: &Path, auto_star: bool) -> Result<SearchPath, ParsePathError> {
     #[derive(Copy, Clone, Debug, PartialEq, Eq)]
     enum State {
@@ -197,6 +313,7 @@ fn parse_path(path: &Path, auto_star: bool) -> Result<SearchPath, ParsePathError
         Star,
     }
 
+    let _ = dbg!(parse_path2(path, auto_star));
     let all_components = tokenize(path);
 
     let mut path = PathBuf::with_capacity(path.as_os_str().len());
