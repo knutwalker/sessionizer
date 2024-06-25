@@ -269,13 +269,10 @@ mod tests {
             root: PathBuf::from("/tmp"),
             on_init: Init {
                 env: vec![
-                    (
-                        "FOO".to_owned(),
-                        EnvValue::parse("let's $SESSIONIZER_TEST").unwrap(),
-                    ),
+                    ("FOO".to_owned(), EnvValue::new("let's $SESSIONIZER_TEST")),
                     (
                         "BAR".to_owned(),
-                        EnvValue::parse("Can also use previously defined vars: '${FOO}'").unwrap(),
+                        EnvValue::new("Can also use previously defined vars: '${FOO}'"),
                     ),
                 ],
                 ..Default::default()
@@ -318,10 +315,7 @@ mod tests {
             name: "test".to_owned(),
             root: PathBuf::from("/tmp"),
             on_init: Init {
-                env: vec![(
-                    "FOO".to_owned(),
-                    EnvValue::parse("$SESSIONIZER_TEST_UNSET").unwrap(),
-                )],
+                env: vec![("FOO".to_owned(), EnvValue::new("$SESSIONIZER_TEST_UNSET"))],
                 ..Default::default()
             },
         };

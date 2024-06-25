@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     env,
-    ffi::{OsStr, OsString},
+    ffi::OsStr,
     fmt::{self, Display},
     fs::{self, OpenOptions, Permissions},
     io::{self, Write as _},
@@ -22,6 +22,7 @@ use tempfile::NamedTempFile;
 use winnow::{
     ascii::escaped_transform,
     combinator::{alt, cut_err, delimited, eof, opt, preceded, repeat, trace},
+    error::{ErrMode, ParserError},
     token::{take_till, take_until, take_while},
     PResult, Parser,
 };
@@ -95,8 +96,8 @@ pub enum EnvValue {
     Value(String),
     Dynamic(Vec<EnvVariable>),
     Command {
-        program: OsString,
-        args: Vec<OsString>,
+        program: String,
+        args: Vec<EnvValue>,
     },
 }
 
@@ -469,8 +470,11 @@ impl EnvValue {
     fn validate(&self, has_key: &impl Fn(&str) -> bool) -> Result<(), EnvError> {
         match self {
             Self::Value(..) => Ok(()),
-            Self::Command { .. } => {
+            Self::Command { program: _, args } => {
                 // TODO: check that the command exists (which)
+                for arg in args {
+                    arg.validate(has_key)?;
+                }
                 Ok(())
             }
             Self::Dynamic(items) => {
@@ -500,6 +504,7 @@ impl EnvValue {
     where
         &'env E: IntoIterator<Item = (&'env String, &'env String)>,
     {
+        trace!(?self, "Resolving env value");
         match self {
             Self::Value(v) => Ok(v),
             Self::Dynamic(parts) => parts
@@ -519,11 +524,20 @@ impl EnvValue {
                 })
                 .collect::<Result<String, _>>(),
             Self::Command { program, args } => {
-                let output = Command::new(program)
-                    .args(args)
-                    .envs(add_env.into_iter())
+                let mut cmd = Command::new(program);
+                args.into_iter().try_for_each(|arg| {
+                    let arg = arg.resolve(get_env, add_env)?;
+                    let _ = cmd.arg(arg);
+                    Ok(())
+                })?;
+                let _ = cmd.envs(add_env);
+
+                trace!(?cmd, "Running command");
+
+                let output = cmd
                     .output()
                     .map_err(|e| EnvError::Command(e, String::new()))?;
+
                 if !output.status.success() {
                     return Err(EnvError::Command(
                         io::Error::new(io::ErrorKind::Other, "Command failed"),
@@ -539,6 +553,11 @@ impl EnvValue {
 }
 
 impl EnvValue {
+    #[cfg(test)]
+    pub fn new(s: &str) -> Self {
+        Self::parse(s).unwrap()
+    }
+
     pub fn parse(s: &str) -> Result<Self> {
         Self::parse_root.parse(s).map_err(|e| eyre!(e.to_string()))
     }
@@ -567,25 +586,48 @@ impl EnvValue {
         .parse_next(input)
     }
 
-    fn parse_command(input: &mut &str) -> PResult<Self> {
+    fn parse_without_command(input: &mut &str) -> PResult<Self> {
         trace(
-            "command",
-            take_until(1.., ")").verify_map(|cmd| {
-                let (program, args) = Self::split_cmd(cmd)?;
-                Some(Self::Command { program, args })
-            }),
+            "without_command",
+            alt((
+                (Self::parse_value, eof).map(|(res, _)| Self::Value(res)),
+                Self::parse_expand,
+            )),
         )
         .parse_next(input)
     }
 
-    fn split_cmd(input: &str) -> Option<(OsString, Vec<OsString>)> {
+    fn parse_command(input: &mut &str) -> PResult<Self> {
+        trace(
+            "command",
+            take_until(1.., ")")
+                .and_then(Self::split_cmd)
+                .map(|(program, args)| Self::Command { program, args }),
+        )
+        .parse_next(input)
+    }
+
+    fn split_cmd(input: &mut &str) -> PResult<(String, Vec<Self>)> {
         let mut shl = shlex::Shlex::new(input);
-        let mut args = shl.by_ref().map(OsString::from).collect::<Vec<_>>();
+        let mut args = shl
+            .by_ref()
+            .map(|s| Self::parse_without_command(&mut s.as_str()))
+            .collect::<PResult<Vec<_>>>()?;
+
         if shl.had_error || args.is_empty() {
-            return None;
+            return Err(ErrMode::from_error_kind(
+                &*input,
+                winnow::error::ErrorKind::Verify,
+            ));
         }
-        let program = args.remove(0);
-        Some((program, args))
+        let Self::Value(program) = args.remove(0) else {
+            return Err(ErrMode::from_error_kind(
+                &*input,
+                winnow::error::ErrorKind::Verify,
+            ));
+        };
+
+        Ok((program, args))
     }
 
     fn parse_expand(input: &mut &str) -> PResult<Self> {
@@ -969,13 +1011,13 @@ mod tests {
     }
 
     fn test_parse_env_value(input: &str, expected: &str) {
-        let value = EnvValue::parse(input).unwrap();
+        let value = EnvValue::new(input);
         assert_eq!(value, EnvValue::Value(expected.to_owned()));
     }
 
     #[test]
     fn parse_env_expansion() {
-        let value = EnvValue::parse("${FOO}").unwrap();
+        let value = EnvValue::new("${FOO}");
         assert_eq!(
             value,
             EnvValue::Dynamic(vec![EnvVariable::Expand {
@@ -987,7 +1029,7 @@ mod tests {
 
     #[test]
     fn parse_env_expansion_with_default() {
-        let value = EnvValue::parse("${FOO:-bar}").unwrap();
+        let value = EnvValue::new("${FOO:-bar}");
         assert_eq!(
             value,
             EnvValue::Dynamic(vec![EnvVariable::Expand {
@@ -999,7 +1041,7 @@ mod tests {
 
     #[test]
     fn parse_env_expansion_default_other_var() {
-        let value = EnvValue::parse("${FOO:-$BAR}").unwrap();
+        let value = EnvValue::new("${FOO:-$BAR}");
         assert_eq!(
             value,
             EnvValue::Dynamic(vec![EnvVariable::Expand {
@@ -1014,7 +1056,7 @@ mod tests {
 
     #[test]
     fn parse_env_expansion_no_braces() {
-        let value = EnvValue::parse("$FOO").unwrap();
+        let value = EnvValue::new("$FOO");
         assert_eq!(
             value,
             EnvValue::Dynamic(vec![EnvVariable::Expand {
@@ -1026,7 +1068,7 @@ mod tests {
 
     #[test]
     fn parse_env_expansion_mixed() {
-        let value = EnvValue::parse("${FOO}bar${BAZ}").unwrap();
+        let value = EnvValue::new("${FOO}bar${BAZ}");
         assert_eq!(
             value,
             EnvValue::Dynamic(vec![
@@ -1045,13 +1087,13 @@ mod tests {
 
     #[test]
     fn parse_env_expansion_dollar_escaped() {
-        let value = EnvValue::parse(r"\$FOO").unwrap();
+        let value = EnvValue::new(r"\$FOO");
         assert_eq!(value, EnvValue::Value("$FOO".to_owned()));
     }
 
     #[test]
     fn parse_env_expansion_backslash_escaped() {
-        let value = EnvValue::parse(r"\\$FOO").unwrap();
+        let value = EnvValue::new(r"\\$FOO");
         assert_eq!(
             value,
             EnvValue::Dynamic(vec![
@@ -1066,60 +1108,81 @@ mod tests {
 
     #[test]
     fn parse_env_value_command() {
-        let value = EnvValue::parse("$(echo foo)").unwrap();
+        let value = EnvValue::new("$(echo foo)");
         assert_eq!(
             value,
             EnvValue::Command {
                 program: "echo".into(),
-                args: vec!["foo".into()]
+                args: vec![EnvValue::new("foo")]
             }
         );
     }
 
     #[test]
     fn parse_env_value_command_with_args() {
-        let value = EnvValue::parse("$(echo foo bar)").unwrap();
+        let value = EnvValue::new("$(echo foo bar)");
         assert_eq!(
             value,
             EnvValue::Command {
                 program: "echo".into(),
-                args: vec!["foo".into(), "bar".into()]
+                args: vec![
+                    EnvValue::Value("foo".to_owned()),
+                    EnvValue::Value("bar".to_owned())
+                ]
             }
         );
     }
 
     #[test]
     fn parse_env_value_command_with_single_quotes() {
-        let value = EnvValue::parse("$(echo 'foo bar')").unwrap();
+        let value = EnvValue::new("$(echo 'foo bar')");
         assert_eq!(
             value,
             EnvValue::Command {
                 program: "echo".into(),
-                args: vec!["foo bar".into()]
+                args: vec![EnvValue::Value("foo bar".to_owned())]
             }
         );
     }
 
     #[test]
     fn parse_env_value_command_with_double_quotes() {
-        let value = EnvValue::parse(r#"$(echo "foo bar")"#).unwrap();
+        let value = EnvValue::new(r#"$(echo "foo bar")"#);
         assert_eq!(
             value,
             EnvValue::Command {
                 program: "echo".into(),
-                args: vec!["foo bar".into()]
+                args: vec![EnvValue::Value("foo bar".to_owned())]
             }
         );
     }
 
     #[test]
     fn parse_env_value_command_with_escaped_double_quotes() {
-        let value = EnvValue::parse(r#"$(echo "foo \"bar\"")"#).unwrap();
+        let value = EnvValue::new(r#"$(echo "foo \"bar\"")"#);
         assert_eq!(
             value,
             EnvValue::Command {
                 program: "echo".into(),
-                args: vec!["foo \"bar\"".into()]
+                args: vec![EnvValue::Value("foo \"bar\"".to_owned())]
+            }
+        );
+    }
+
+    #[test]
+    fn parse_env_value_with_var_expands() {
+        let value = EnvValue::new(r#"$(echo 'foo' "${BAR}")"#);
+        assert_eq!(
+            value,
+            EnvValue::Command {
+                program: "echo".into(),
+                args: vec![
+                    EnvValue::Value("foo".to_owned()),
+                    EnvValue::Dynamic(vec![EnvVariable::Expand {
+                        key: "BAR".to_owned(),
+                        default: None
+                    }])
+                ]
             }
         );
     }
