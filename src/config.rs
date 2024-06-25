@@ -11,7 +11,7 @@ use std::{
     process::Command,
 };
 
-use color_eyre::{eyre::Context as _, owo_colors::OwoColorize as _, Section as _, SectionExt as _};
+use color_eyre::{eyre::Context as _, Section as _, SectionExt as _};
 use inquire::Select;
 use onlyerror::Error;
 use serde::{
@@ -197,6 +197,7 @@ impl Config {
                 .map(|()| {
                     let _ = new_keys.insert(k.as_str());
                 })
+                .with_section(|| k.clone().header("Variable:"))
         })?;
 
         let action = Init {
@@ -393,35 +394,14 @@ impl Config {
                     eprintln!("New config did not validate");
                     eprintln!();
 
-                    line_num = if let Some(ConfigError::FileParsing(toml_error, content)) =
-                        dbg!(dbg!(&e).downcast_ref::<ConfigError>())
-                    {
-                        eprintln!("{}", toml_error.bright_red());
-                        toml_error.span().map(|span| {
-                            if content.is_empty() {
-                                return 0;
-                            }
-                            let input = content.as_bytes();
-                            let index = span.start;
+                    let error = e
+                        .downcast::<ConfigError>()
+                        .map(RenderErr::Config)
+                        .or_else(|e| e.downcast::<EnvError>().map(RenderErr::Env))
+                        .unwrap_or_else(RenderErr::Other);
 
-                            let safe_index = index.min(input.len() - 1);
-                            let index = safe_index;
-
-                            let nl = input[0..index]
-                                .iter()
-                                .rev()
-                                .enumerate()
-                                .find(|(_, b)| **b == b'\n')
-                                .map(|(nl, _)| index - nl - 1);
-                            let line_start = nl.map_or(0, |nl| nl + 1);
-
-                            let line = bytecount::count(&input[0..line_start], b'\n');
-                            line + 1
-                        })
-                    } else {
-                        eprintln!("{e:?}");
-                        None
-                    };
+                    error.render();
+                    line_num = error.line_number();
 
                     eprintln!();
 
@@ -462,6 +442,60 @@ impl Config {
                     }
                 }
             }
+        }
+    }
+}
+
+enum RenderErr {
+    Config(ConfigError),
+    Env(EnvError),
+    Other(color_eyre::eyre::Error),
+}
+
+impl RenderErr {
+    fn render(&self) {
+        use color_eyre::owo_colors::OwoColorize as _;
+        match self {
+            Self::Config(ConfigError::FileParsing(e, ..)) => {
+                eprintln!("{}", e.bright_red());
+            }
+            Self::Config(e) => {
+                eprintln!("{}", e.bright_red());
+            }
+            Self::Env(e) => {
+                eprintln!("{}", e.bright_red());
+            }
+            Self::Other(e) => {
+                eprintln!("{e:?}");
+            }
+        }
+    }
+
+    fn line_number(&self) -> Option<usize> {
+        if let Self::Config(ConfigError::FileParsing(e, content)) = self {
+            e.span().map(|span| {
+                if content.is_empty() {
+                    return 0;
+                }
+                let input = content.as_bytes();
+                let index = span.start;
+
+                let safe_index = index.min(input.len() - 1);
+                let index = safe_index;
+
+                let nl = input[0..index]
+                    .iter()
+                    .rev()
+                    .enumerate()
+                    .find(|(_, b)| **b == b'\n')
+                    .map(|(nl, _)| index - nl - 1);
+                let line_start = nl.map_or(0, |nl| nl + 1);
+
+                let line = bytecount::count(&input[0..line_start], b'\n');
+                line + 1
+            })
+        } else {
+            None
         }
     }
 }

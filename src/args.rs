@@ -2,7 +2,12 @@ use std::{env, fmt, io, iter};
 
 use clap::{value_parser, Arg, ArgAction, ArgGroup, ArgMatches, Command};
 
-use crate::{config::ConfigError, debug};
+use crate::{
+    config::{ConfigError, EnvError},
+    debug,
+    init::InitError,
+    project::{ParsePathError, ProjectError},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -272,13 +277,20 @@ impl Action {
             .issue_filter(|o| match o {
                 ErrorKind::NonRecoverable(_) => true,
                 ErrorKind::Recoverable(e) => iter::successors(Some(e), |e| e.source())
-                    .find_map(|e| e.downcast_ref::<ConfigError>())
-                    .map_or(true, |e| {
-                        matches!(
-                            e,
-                            ConfigError::FileReading(_) | ConfigError::InvalidWindowDir(_)
-                        )
-                    }),
+                    .find_map(|e| {
+                        e.downcast_ref::<ConfigError>()
+                            .map(|e| {
+                                matches!(
+                                    e,
+                                    ConfigError::FileReading(_) | ConfigError::InvalidWindowDir(_)
+                                )
+                            })
+                            .or_else(|| e.downcast_ref::<EnvError>().map(|_| false))
+                            .or_else(|| e.downcast_ref::<InitError>().map(|_| false))
+                            .or_else(|| e.downcast_ref::<ProjectError>().map(|_| false))
+                            .or_else(|| e.downcast_ref::<ParsePathError>().map(|_| false))
+                    })
+                    .unwrap_or(true),
             })
             .install()
             .expect("failed to install color_eyre");
