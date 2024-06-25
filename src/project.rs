@@ -32,8 +32,10 @@ impl SearchPath {
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug, Error)]
 pub enum ProjectError {
-    #[error("{0}")]
-    ParsePathError(#[from] ParsePathError),
+    #[error("Path `{0:?}`: {1}")]
+    ParsePathError(PathBuf, #[source] ParsePathError),
+    #[error("Path `{0:?}` does not exist")]
+    NotFound(PathBuf),
     #[error("Path `{0:?}` could not be canonicalized: {1}")]
     CanonicalizationFailed(PathBuf, #[source] std::io::Error),
 }
@@ -80,11 +82,21 @@ pub fn find_projects(tx: &SyncSender<Entry>) -> Result<(), ProjectError> {
 }
 
 fn read_sessionizer_path() -> Option<Result<Vec<SearchPath>, ProjectError>> {
-    env::var_os("SESSIONIZER_PATH").map(|path| parse_paths(env::split_paths(&path), false))
+    env::var_os("SESSIONIZER_PATH").map(|path| parse_paths(env::split_paths(&path), false, Err))
 }
 
 fn read_cdpath() -> Option<Result<Vec<SearchPath>, ProjectError>> {
-    env::var_os("CDPATH").map(|path| parse_paths(env::split_paths(&path), true))
+    env::var_os("CDPATH").map(|path| parse_paths(env::split_paths(&path), true, |e| match e {
+        ProjectError::ParsePathError(p, ParsePathError::PathNotAbsolute) => {
+            debug!(path =% p.display(), "Skipping path from $CDPATH because it is not absolute.");
+            Ok(None)
+        },
+        ProjectError::NotFound(p) => {
+            debug!(path =% p.display(), "Skipping path from $CDPTH because it does not exist.");
+            Ok(None)
+        },
+        e => Err(e),
+    }))
 }
 
 fn query_zoxide() -> Option<Result<Vec<SearchPath>, ProjectError>> {
@@ -155,22 +167,24 @@ fn home_dir() -> Option<&'static Path> {
 fn parse_paths(
     paths: impl IntoIterator<Item = PathBuf>,
     auto_star: bool,
+    recover: impl Fn(ProjectError) -> Result<Option<SearchPath>, ProjectError>,
 ) -> Result<Vec<SearchPath>, ProjectError> {
     paths
         .into_iter()
-        .filter_map(|p| match parse_path(&p, auto_star) {
-            Ok(path) => Some(
-                path.path
-                    .canonicalize()
-                    .map(|p| SearchPath { path: p, ..path })
-                    .map_err(|e| ProjectError::CanonicalizationFailed(path.path, e)),
-            ),
-            Err(ParsePathError::PathNotAbsolute) if auto_star => {
-                debug!(path =% p.display(), "Skipping path because it us not absolute.");
-                None
-            }
-            Err(e) => Some(Err(ProjectError::ParsePathError(e))),
+        .map(|p| match parse_path(&p, auto_star) {
+            Ok(path) => path
+                .path
+                .canonicalize()
+                .map(|p| SearchPath { path: p, ..path })
+                .map_err(|e| -> ProjectError {
+                    match e.kind() {
+                        std::io::ErrorKind::NotFound => ProjectError::NotFound(path.path),
+                        _ => ProjectError::CanonicalizationFailed(path.path, e),
+                    }
+                }),
+            Err(e) => Err(ProjectError::ParsePathError(p, e)),
         })
+        .filter_map(|path| path.map(Some).or_else(&recover).transpose())
         .collect::<Result<Vec<_>, _>>()
 }
 
