@@ -1,4 +1,4 @@
-use std::{env, fmt, io, iter};
+use std::{env, fmt, io, iter, path::PathBuf};
 
 use clap::{value_parser, Arg, ArgAction, ArgGroup, ArgMatches, Command};
 
@@ -23,6 +23,7 @@ pub struct Search {
     pub insecure: bool,
     pub use_color: bool,
     pub empty_exit_code: i32,
+    pub projects_config: Option<PathBuf>,
     pub scope: Scope,
     pub query: Option<String>,
 }
@@ -159,7 +160,7 @@ impl Action {
         ]
     }
 
-    fn search_args() -> [Arg; 6] {
+    fn search_args() -> [Arg; 7] {
         [
             Arg::new("dry_run")
                 .long("dry-run")
@@ -180,6 +181,13 @@ impl Action {
                 .help("Return with this exit code when an empty selection was made")
                 .default_value("0")
                 .value_parser(value_parser!(i32))
+                .action(ArgAction::Set)
+                .required(false),
+            Arg::new("projects_config")
+                .long("projects-config")
+                .short('C')
+                .help("Read from the given config file instead of the default location (~/.config/sessionizer/sessionizer.toml)")
+                .value_parser(value_parser!(PathBuf))
                 .action(ArgAction::Set)
                 .required(false),
             Arg::new("tmux_only")
@@ -338,6 +346,7 @@ impl Action {
             return Self::Config(config);
         }
 
+        let projects_config = matches.remove_one::<PathBuf>("projects_config");
         let tmux_only = matches.remove_one::<bool>("tmux_only").expect("flag");
         let projects_only = matches.remove_one::<bool>("projects_only").expect("flag");
         let scope = match (tmux_only, projects_only) {
@@ -366,6 +375,7 @@ impl Action {
             insecure,
             use_color,
             empty_exit_code,
+            projects_config,
             scope,
             query,
         })

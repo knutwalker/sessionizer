@@ -70,6 +70,7 @@ fn run_search(
         insecure,
         use_color,
         empty_exit_code,
+        projects_config,
         scope,
         query,
     }: Search,
@@ -77,7 +78,7 @@ fn run_search(
     let (tx, entries) = spawn_collector();
 
     if scope.check_projects() {
-        find_projects(&tx)?;
+        find_projects(projects_config, &tx)?;
     }
 
     let tmux_ls = (scope.check_tmux()).then(|| find_tmux_sessions(tx.clone()));

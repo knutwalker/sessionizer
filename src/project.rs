@@ -67,8 +67,8 @@ pub enum ParsePathError {
     UnknownHomeDirectory,
 }
 
-pub fn find_projects(tx: &SyncSender<Entry>) -> Result<(), ProjectError> {
-    let paths = read_sessionizer_config(None)
+pub fn find_projects(config: Option<PathBuf>, tx: &SyncSender<Entry>) -> Result<(), ProjectError> {
+    let paths = read_sessionizer_config(config)
         .or_else(read_sessionizer_path)
         .or_else(read_cdpath)
         .or_else(query_zoxide)
@@ -96,9 +96,12 @@ pub fn find_projects(tx: &SyncSender<Entry>) -> Result<(), ProjectError> {
 fn read_sessionizer_config(
     config_path: Option<PathBuf>,
 ) -> Option<Result<SessionizerConfig, ProjectError>> {
-    let config_path = config_path.map(Ok).or_else(|| {
+    let config_path = config_path.map(|c| Ok(Err(c))).or_else(|| {
         xdg::BaseDirectories::with_prefix(env!("CARGO_PKG_NAME"))
-            .map(|dirs| dirs.find_config_file(concat!(env!("CARGO_PKG_NAME"), ".toml")))
+            .map(|dirs| {
+                dirs.find_config_file(concat!(env!("CARGO_PKG_NAME"), ".toml"))
+                    .map(Ok)
+            })
             .map_err(ProjectError::ConfigFileFindError)
             .transpose()
     })?;
@@ -107,10 +110,15 @@ fn read_sessionizer_config(
         return Some(Err(config_path.unwrap_err()));
     };
 
+    let (config_path, allow_missing) = match config_path {
+        Ok(config_path) => (config_path, true),
+        Err(config_path) => (config_path, false),
+    };
+
     let config = std::fs::read_to_string(&config_path)
         .map(Some)
         .or_else(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
+            if allow_missing && e.kind() == std::io::ErrorKind::NotFound {
                 Ok(None)
             } else {
                 Err(ProjectError::ConfigFileReadError(e))
