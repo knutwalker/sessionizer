@@ -184,7 +184,7 @@ impl Action {
                 .action(ArgAction::Set)
                 .required(false),
             Arg::new("projects_config")
-                .long("projects-config")
+                .long("global-config")
                 .short('C')
                 .help("Read from the given config file instead of the default location (~/.config/sessionizer/sessionizer.toml)")
                 .value_parser(value_parser!(PathBuf))
