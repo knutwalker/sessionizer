@@ -286,9 +286,13 @@ fn find_projects_in(mut paths: Vec<SearchPath>, tx: &SyncSender<Entry>) {
 
     let mut walker = None::<(WalkBuilder, usize)>;
 
+    let mut priority = 0;
     paths.retain_mut(|path| {
+        let prio = priority;
+        priority += 1;
+
         if path.depth == (0..1) {
-            if let Some(project) = accept_dir(std::mem::take(&mut path.path), 0) {
+            if let Some(project) = accept_dir(std::mem::take(&mut path.path), 0, prio) {
                 let _ = tx.send(Entry::Project(project));
             };
             return false;
@@ -356,11 +360,12 @@ fn process_dir(paths: &[SearchPath], depth: usize, path: PathBuf) -> DirResult {
         return DirResult::Ignored(WalkState::Continue);
     }
 
-    let search_depth = paths
+    let search_depth_and_idx = paths
         .iter()
-        .find_map(|p| path.starts_with(&p.path).then_some(&p.depth));
+        .enumerate()
+        .find_map(|(idx, p)| path.starts_with(&p.path).then_some((&p.depth, idx)));
 
-    let at_end = if let Some(search_depth) = search_depth {
+    let at_end = if let Some((search_depth, _idx)) = search_depth_and_idx {
         if depth < search_depth.start {
             trace!(path =% path.display(), depth, concat!(
                 "Continue traversing but not searching the path because ",
@@ -379,6 +384,8 @@ fn process_dir(paths: &[SearchPath], depth: usize, path: PathBuf) -> DirResult {
     } else {
         false
     };
+
+    let priority = search_depth_and_idx.map_or(usize::MAX, |(_, idx)| idx);
 
     let git_path = path.join(".git");
     let state = if git_path.exists() {
@@ -399,7 +406,7 @@ fn process_dir(paths: &[SearchPath], depth: usize, path: PathBuf) -> DirResult {
         WalkState::Continue
     };
 
-    let Some(project) = accept_dir(path, depth) else {
+    let Some(project) = accept_dir(path, depth, priority) else {
         return DirResult::Ignored(WalkState::Continue);
     };
 
@@ -407,7 +414,7 @@ fn process_dir(paths: &[SearchPath], depth: usize, path: PathBuf) -> DirResult {
     DirResult::Handle(project, state)
 }
 
-fn accept_dir(path: PathBuf, depth: usize) -> Option<Project> {
+fn accept_dir(path: PathBuf, depth: usize, priority: usize) -> Option<Project> {
     trace!(path =% path.display(), depth, "accepting directory");
 
     let name = path
@@ -437,6 +444,7 @@ fn accept_dir(path: PathBuf, depth: usize) -> Option<Project> {
     };
 
     let project = Project {
+        priority,
         root: path,
         name,
         search_path,

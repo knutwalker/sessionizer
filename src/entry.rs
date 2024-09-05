@@ -37,6 +37,7 @@ pub struct TmuxSession {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Project {
+    pub priority: usize,
     pub root: PathBuf,
     pub name: String,
     pub search_path: String,
@@ -117,18 +118,21 @@ mod tests {
     fn process_sorts_and_deduplicated() {
         let entries = [
             Entry::Project(Project {
+                priority: 0,
                 root: PathBuf::from("/a"),
                 name: "a".into(),
                 search_path: "a".into(),
                 depth: 1,
             }),
             Entry::Project(Project {
+                priority: 0,
                 root: PathBuf::from("/b"),
                 name: "b".into(),
                 search_path: "b".into(),
                 depth: 1,
             }),
             Entry::Project(Project {
+                priority: 0,
                 root: PathBuf::from("/c"),
                 name: "c".into(),
                 search_path: "c".into(),
@@ -170,12 +174,14 @@ mod tests {
                     info: "a".into(),
                 }),
                 Entry::Project(Project {
+                    priority: 0,
                     root: PathBuf::from("/b"),
                     name: "b".into(),
                     search_path: "b".into(),
                     depth: 1,
                 }),
                 Entry::Project(Project {
+                    priority: 0,
                     root: PathBuf::from("/c"),
                     name: "c".into(),
                     search_path: "c".into(),
