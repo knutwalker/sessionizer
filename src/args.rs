@@ -14,6 +14,7 @@ use crate::{
 pub enum Action {
     Search(Search),
     Config(Config),
+    Shell,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -21,6 +22,7 @@ pub struct Search {
     pub dry_run: bool,
     pub insecure: bool,
     pub use_color: bool,
+    pub empty_exit_code: i32,
     pub scope: Scope,
     pub query: Option<String>,
 }
@@ -98,6 +100,7 @@ impl Action {
         .args(Self::verbose_args())
         .args(Self::search_args())
         .args(Self::config_args())
+        .args(Self::shell_args())
         .group(ArgGroup::new("search").multiple(true).args([
             "dry_run",
             "tmux_only",
@@ -156,7 +159,7 @@ impl Action {
         ]
     }
 
-    fn search_args() -> [Arg; 5] {
+    fn search_args() -> [Arg; 6] {
         [
             Arg::new("dry_run")
                 .long("dry-run")
@@ -171,6 +174,13 @@ impl Action {
                 .help("Skip initialization file permission checks")
                 .value_parser(value_parser!(bool))
                 .action(ArgAction::SetTrue)
+                .required(false),
+            Arg::new("empty_exit_code")
+                .long("empty-exit-code")
+                .help("Return with this exit code when an empty selection was made")
+                .default_value("0")
+                .value_parser(value_parser!(i32))
+                .action(ArgAction::Set)
                 .required(false),
             Arg::new("tmux_only")
                 .long("tmux-only")
@@ -219,6 +229,16 @@ impl Action {
                     .alias("e"),
             ]))
             .action(ArgAction::Set)
+            .required(false)]
+    }
+
+    fn shell_args() -> [Arg; 1] {
+        [Arg::new("shell")
+            .long("shell")
+            .short('s')
+            .help("Continuously invoke sessionizer")
+            .conflicts_with_all(["search", "config"])
+            .action(ArgAction::SetTrue)
             .required(false)]
     }
 
@@ -297,7 +317,16 @@ impl Action {
     }
 
     fn from_matches(matches: &mut ArgMatches, use_color: bool) -> Self {
+        let shell = matches.get_flag("shell");
+        if shell {
+            return Self::Shell;
+        }
+
         let insecure = matches.remove_one::<bool>("insecure").expect("flag");
+        let dry_run = matches.remove_one::<bool>("dry_run").expect("flag");
+        let empty_exit_code = matches
+            .remove_one::<i32>("empty_exit_code")
+            .expect("has default value");
         let config = matches.remove_one::<String>("config");
         if let Some(config) = config {
             let config = match config.as_str() {
@@ -317,7 +346,6 @@ impl Action {
             _ => Scope::Both,
         };
 
-        let dry_run = matches.remove_one::<bool>("dry_run").expect("flag");
         let query = matches
             .remove_many::<String>("query")
             .map(|q| {
@@ -337,6 +365,7 @@ impl Action {
             dry_run,
             insecure,
             use_color,
+            empty_exit_code,
             scope,
             query,
         })
