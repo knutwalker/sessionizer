@@ -865,6 +865,7 @@ dependencies = [
  "tracing-error",
  "tracing-subscriber",
  "winnow",
+ "xdg",
 ]
 
 [[package]]
@@ -1408,3 +1409,9 @@ checksum = "59b5e5f6c299a3c7890b876a2a587f3115162487e704907d9b6cd29473052ba1"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "xdg"
+version = "2.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "213b7324336b53d2414b2db8537e56544d981803139155afa84f76eeebb7a546"

@@ -1,7 +1,7 @@
 use std::{
     env,
     ffi::OsStr,
-    fmt::Debug,
+    fmt::{self, Debug},
     ops::Range,
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
@@ -11,6 +11,10 @@ use std::{
 
 use ignore::{DirEntry, WalkBuilder, WalkState};
 use onlyerror::Error;
+use serde::{
+    de::{Error as _, MapAccess, Visitor},
+    Deserialize, Deserializer,
+};
 
 use crate::{debug, info, trace, warn, Entry, Project, Result};
 
@@ -36,6 +40,12 @@ pub enum ProjectError {
     ParsePathError(#[from] ParsePathError),
     #[error("Path `{0:?}` could not be canonicalized: {1}")]
     CanonicalizationFailed(PathBuf, #[source] std::io::Error),
+    #[error("Failed to find config file: {0}")]
+    ConfigFileFindError(#[source] xdg::BaseDirectoriesError),
+    #[error("Failed to read config file: {0}")]
+    ConfigFileReadError(#[source] std::io::Error),
+    #[error("Failed to parse config file: {0}")]
+    ConfigFileParseError(#[source] toml::de::Error),
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -58,14 +68,18 @@ pub enum ParsePathError {
 }
 
 pub fn find_projects(tx: &SyncSender<Entry>) -> Result<(), ProjectError> {
-    let paths = read_sessionizer_path()
+    let paths = read_sessionizer_config(None)
+        .or_else(read_sessionizer_path)
         .or_else(read_cdpath)
         .or_else(query_zoxide)
         .or_else(use_last_resort)
         .transpose()?
-        .unwrap_or_default();
+        .unwrap_or_else(|| SessionizerConfig {
+            paths: Vec::new(),
+            source: "default",
+        });
 
-    if paths.is_empty() {
+    if paths.paths.is_empty() {
         info!(concat!(
             "Could not find any paths to search for projects.",
             "This could be due to a missing $HOME.",
@@ -79,22 +93,67 @@ pub fn find_projects(tx: &SyncSender<Entry>) -> Result<(), ProjectError> {
     Ok(())
 }
 
-fn read_sessionizer_path() -> Option<Result<Vec<SearchPath>, ProjectError>> {
-    env::var_os("SESSIONIZER_PATH").map(|path| parse_paths(env::split_paths(&path), false))
+fn read_sessionizer_config(
+    config_path: Option<PathBuf>,
+) -> Option<Result<SessionizerConfig, ProjectError>> {
+    let config_path = config_path.map(Ok).or_else(|| {
+        xdg::BaseDirectories::with_prefix(env!("CARGO_PKG_NAME"))
+            .map(|dirs| dirs.find_config_file(concat!(env!("CARGO_PKG_NAME"), ".toml")))
+            .map_err(ProjectError::ConfigFileFindError)
+            .transpose()
+    })?;
+
+    let Ok(config_path) = config_path else {
+        return Some(Err(config_path.unwrap_err()));
+    };
+
+    let config = std::fs::read_to_string(&config_path)
+        .map(Some)
+        .or_else(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Ok(None)
+            } else {
+                Err(ProjectError::ConfigFileReadError(e))
+            }
+        })
+        .transpose()?
+        .and_then(|c| {
+            toml::from_str::<SessionizerConfig>(&c).map_err(ProjectError::ConfigFileParseError)
+        });
+
+    match config {
+        Ok(config) => Some(Ok(config)),
+        Err(e) => Some(Err(e)),
+    }
 }
 
-fn read_cdpath() -> Option<Result<Vec<SearchPath>, ProjectError>> {
-    env::var_os("CDPATH").map(|path| parse_paths(env::split_paths(&path), true))
+fn read_sessionizer_path() -> Option<Result<SessionizerConfig, ProjectError>> {
+    env::var_os("SESSIONIZER_PATH").map(|path| {
+        parse_paths(env::split_paths(&path), false).map(|paths| SessionizerConfig {
+            paths,
+            source: "SESSIONIZER_PATH",
+        })
+    })
 }
 
-fn query_zoxide() -> Option<Result<Vec<SearchPath>, ProjectError>> {
+fn read_cdpath() -> Option<Result<SessionizerConfig, ProjectError>> {
+    env::var_os("CDPATH").map(|path| {
+        parse_paths(env::split_paths(&path), true).map(|paths| SessionizerConfig {
+            paths,
+            source: "CDPATH",
+        })
+    })
+}
+
+fn query_zoxide() -> Option<Result<SessionizerConfig, ProjectError>> {
     Command::new("zoxide")
         .arg("query")
         .arg("--list")
         .output()
         .ok()
         .map(|o| {
-            Ok(o.stdout
+            let paths = o
+                .stdout
                 .split(|c| *c == b'\n')
                 .filter_map(|p| {
                     let path = OsStr::from_bytes(p);
@@ -113,14 +172,22 @@ fn query_zoxide() -> Option<Result<Vec<SearchPath>, ProjectError>> {
                     Some(path)
                 })
                 .map(|p| SearchPath::new(p, 0..1))
-                .collect())
+                .collect();
+            Ok(SessionizerConfig {
+                paths,
+                source: "zoxide",
+            })
         })
 }
 
-fn use_last_resort() -> Option<Result<Vec<SearchPath>, ProjectError>> {
+fn use_last_resort() -> Option<Result<SessionizerConfig, ProjectError>> {
     warn!("No SESSIONIZER_PATH set, showing only ~/.config as result.");
     let home = home_dir()?;
-    Some(Ok(vec![SearchPath::new(home.join(".config"), 1..2)]))
+    let paths = vec![SearchPath::new(home.join(".config"), 1..2)];
+    Some(Ok(SessionizerConfig {
+        paths,
+        source: "~/.config fallback",
+    }))
 }
 
 #[cfg(not(test))]
@@ -281,8 +348,14 @@ fn tokenize(path: &Path) -> impl Iterator<Item = Token<'_>> {
         .chain(std::iter::once(Token::End))
 }
 
-fn find_projects_in(mut paths: Vec<SearchPath>, tx: &SyncSender<Entry>) {
-    debug!(?paths, "Searching for projects in these locations");
+fn find_projects_in(paths: SessionizerConfig, tx: &SyncSender<Entry>) {
+    debug!(
+        path =? paths.paths,
+        source =% paths.source,
+        "Searching for projects in these locations"
+    );
+
+    let mut paths = paths.paths;
 
     let mut walker = None::<(WalkBuilder, usize)>;
 
@@ -452,6 +525,186 @@ fn accept_dir(path: PathBuf, depth: usize, priority: usize) -> Option<Project> {
     };
 
     Some(project)
+}
+
+#[derive(Debug)]
+struct SessionizerConfig {
+    paths: Vec<SearchPath>,
+    source: &'static str,
+}
+
+struct Depth {
+    min: usize,
+    max: usize,
+}
+
+impl<'de> Deserialize<'de> for SessionizerConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &["paths"];
+
+        struct Vis;
+        impl<'de> Visitor<'de> for Vis {
+            type Value = SessionizerConfig;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Formatter::write_str(formatter, "struct SessionizerConfig")
+            }
+
+            #[inline]
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut paths = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "paths" => {
+                            if paths.is_some() {
+                                return Err(A::Error::duplicate_field("paths"));
+                            }
+                            paths = Some(map.next_value()?);
+                        }
+                        otherwise => return Err(A::Error::unknown_field(otherwise, FIELDS)),
+                    }
+                }
+                let paths = paths.ok_or_else(|| A::Error::missing_field("paths"))?;
+                Ok(SessionizerConfig {
+                    paths,
+                    source: "config",
+                })
+            }
+        }
+
+        deserializer.deserialize_struct("SessionizerConfig", FIELDS, Vis)
+    }
+}
+
+#[allow(clippy::similar_names)]
+impl<'de> Deserialize<'de> for Depth {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &["min", "max"];
+
+        struct Vis;
+        impl<'de> Visitor<'de> for Vis {
+            type Value = Depth;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Formatter::write_str(formatter, "struct Depth")
+            }
+
+            #[inline]
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut min = None;
+                let mut max = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "min" => {
+                            if min.is_some() {
+                                return Err(A::Error::duplicate_field("min"));
+                            }
+                            min = Some(map.next_value()?);
+                        }
+                        "max" => {
+                            if max.is_some() {
+                                return Err(A::Error::duplicate_field("max"));
+                            }
+                            max = Some(map.next_value()?);
+                        }
+                        otherwise => return Err(A::Error::unknown_field(otherwise, FIELDS)),
+                    }
+                }
+                let min = min.ok_or_else(|| A::Error::missing_field("min"))?;
+                let max = max.ok_or_else(|| A::Error::missing_field("max"))?;
+                Ok(Depth { min, max })
+            }
+
+            #[inline]
+            fn visit_i64<E>(self, v: i64) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                usize::try_from(v)
+                    .map_err(|e| E::custom(format!("value out of range: {e}")))
+                    .map(|v| Depth { min: 1, max: v })
+            }
+        }
+
+        deserializer.deserialize_any(Vis)
+    }
+}
+
+impl<'de> Deserialize<'de> for SearchPath {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &["path", "depth"];
+
+        struct Vis;
+        impl<'de> Visitor<'de> for Vis {
+            type Value = SearchPath;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Formatter::write_str(formatter, "struct SearchPath")
+            }
+
+            #[inline]
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut path = None::<String>;
+                let mut depth = None::<Depth>;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "path" | "dir" => {
+                            if path.is_some() {
+                                return Err(A::Error::duplicate_field("path"));
+                            }
+                            path = Some(map.next_value()?);
+                        }
+                        "depth" => {
+                            if depth.is_some() {
+                                return Err(A::Error::duplicate_field("depth"));
+                            }
+                            depth = Some(map.next_value()?);
+                        }
+                        otherwise => return Err(A::Error::unknown_field(otherwise, FIELDS)),
+                    }
+                }
+                let path = path.ok_or_else(|| A::Error::missing_field("path"))?;
+
+                let path = parse_path(Path::new(&path), false)
+                    .map_err(|e| A::Error::custom(format!("Failed to parse path: {e}")))?;
+
+                let depth = depth.map_or(path.depth, |d| d.min..d.max);
+                Ok(SearchPath {
+                    path: path.path,
+                    depth,
+                })
+            }
+
+            #[inline]
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                parse_path(Path::new(v), false)
+                    .map_err(|e| E::custom(format!("Failed to parse path: {e}")))
+            }
+        }
+
+        deserializer.deserialize_struct("SearchPath", FIELDS, Vis)
+    }
 }
 
 #[cfg(test)]
