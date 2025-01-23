@@ -186,7 +186,7 @@ impl Action {
             Arg::new("projects_config")
                 .long("global-config")
                 .short('C')
-                .help("Read from the given config file instead of the default location (~/.config/sessionizer/sessionizer.toml)")
+                .help("Read from the given config file instead of the default location (~/.config/sessionizer/config.toml)")
                 .value_parser(value_parser!(PathBuf))
                 .action(ArgAction::Set)
                 .required(false),
