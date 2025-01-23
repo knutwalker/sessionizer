@@ -99,7 +99,8 @@ fn read_sessionizer_config(
     let config_path = config_path.map(|c| Ok(Err(c))).or_else(|| {
         xdg::BaseDirectories::with_prefix(env!("CARGO_PKG_NAME"))
             .map(|dirs| {
-                dirs.find_config_file(concat!(env!("CARGO_PKG_NAME"), ".toml"))
+                dirs.find_config_file("config.toml")
+                    .or_else(|| dirs.find_config_file(concat!(env!("CARGO_PKG_NAME"), ".toml")))
                     .map(Ok)
             })
             .map_err(ProjectError::ConfigFileFindError)

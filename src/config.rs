@@ -921,7 +921,7 @@ impl<'de> Deserialize<'de> for OnExit {
         const VARIANTS: &[&str] = &["destroy", "deactivate", "shell"];
 
         struct OnExitVisitor;
-        impl<'de> Visitor<'de> for OnExitVisitor {
+        impl Visitor<'_> for OnExitVisitor {
             type Value = OnExit;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -965,7 +965,7 @@ impl<'de> Deserialize<'de> for EnvValue {
         D: Deserializer<'de>,
     {
         struct Vis;
-        impl<'de> Visitor<'de> for Vis {
+        impl Visitor<'_> for Vis {
             type Value = EnvValue;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1296,9 +1296,9 @@ mod tests {
 
     fn test_window_aliases(window: &str) {
         let config = format!(
-            r#"
+            r"
                     [[{window}]]
-                "#,
+                ",
         );
 
         let config = toml::from_str::<Config>(&config).unwrap();
@@ -1446,10 +1446,10 @@ mod tests {
 
     fn test_window_on_exit_values(on_exit: &str, expected: OnExit) {
         let config = format!(
-            r#"
+            r"
                     [[window]]
                     on-exit = {on_exit}
-                "#,
+                ",
         );
 
         let config = toml::from_str::<Config>(&config).unwrap();
