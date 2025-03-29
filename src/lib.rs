@@ -67,6 +67,7 @@ fn run_shell() -> Result<()> {
 fn run_search(
     Search {
         dry_run,
+        load_file,
         insecure,
         use_color,
         empty_exit_code,
@@ -99,8 +100,8 @@ fn run_search(
 
     let command = prompt_user(selection).and_then(|e| {
         e.map(|e| {
-            debug!(eentry =? e, "selected");
-            apply_entry(e, !insecure)
+            debug!(entry =? e, "selected");
+            apply_entry(e, load_file, !insecure)
         })
         .transpose()
     })?;
@@ -142,10 +143,12 @@ fn find_tmux_sessions(tx: SyncSender<Entry>) -> Thread<()> {
     Thread::new("tmux ls", thread)
 }
 
-fn apply_entry(entry: Entry, secure: bool) -> Result<Command> {
+fn apply_entry(entry: Entry, load_file: bool, secure: bool) -> Result<Command> {
     let action = match entry {
         Entry::Project(project) => {
-            let on_init = init::find_action(&project.root, secure)
+            let on_init = load_file
+                .then(|| init::find_action(&project.root, secure))
+                .flatten()
                 .transpose()?
                 .unwrap_or_default();
             Action::Create {
