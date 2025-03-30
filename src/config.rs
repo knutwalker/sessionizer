@@ -8,7 +8,7 @@ use std::{
     mem,
     os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
     path::{Path, PathBuf},
-    process::Command,
+    process::Command as Proc,
 };
 
 use color_eyre::{Section as _, SectionExt as _, eyre::Context as _};
@@ -29,7 +29,7 @@ use winnow::{
 
 use crate::{
     Result, debug, eyre, info,
-    init::{Init, SpawnWindow, WindowCommand},
+    init::{self, Init, SpawnWindow, WindowCommand},
     trace,
 };
 
@@ -89,6 +89,7 @@ pub struct Config {
     env: Vec<(String, EnvValue)>,
     windows: Vec<Window>,
     run: Vec<Run>,
+    layout: Option<Layout>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,8 +116,36 @@ pub enum EnvVariable {
 struct Window {
     name: Option<String>,
     dir: Option<PathBuf>,
-    command: Option<String>,
+    command: Command,
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+enum Layout {
+    Split {
+        size: Option<String>,
+        axis: Axis,
+        panes: Vec<Layout>,
+    },
+    Pane {
+        size: Option<String>,
+        dir: Option<PathBuf>,
+        cmd: Command,
+    },
+}
+
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+struct Command {
+    cmd: Option<String>,
     on_exit: OnExit,
+}
+
+#[derive(Debug, Copy, Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+pub enum Axis {
+    Horizontal,
+    Vertical,
 }
 
 #[derive(Debug, Copy, Clone, Default)]
@@ -181,7 +210,7 @@ impl Config {
             .into_iter()
             .enumerate()
             .map(|(idx, run)| {
-                let _ = Self::validate_command("Run", idx, &run.command)?;
+                let _ = Self::validate_run_command("Run", idx, &run.command)?;
                 Ok(run.command)
             })
             .collect::<Result<_>>()?;
@@ -202,15 +231,22 @@ impl Config {
                 .with_section(|| k.clone().header("Variable:"))
         })?;
 
+        let layout = self
+            .layout
+            .map(|l| Self::validate_layout(root_dir, l))
+            .transpose()?
+            .map(Box::new);
+
         let action = Init {
             env: self.env,
             run,
             windows,
+            layout,
         };
         Ok(action)
     }
 
-    fn validate_command(section: &str, idx: usize, cmd: &str) -> Result<Vec<String>> {
+    fn validate_run_command(section: &str, idx: usize, cmd: &str) -> Result<Vec<String>> {
         if cmd.trim().is_empty() {
             return Err(eyre!(ConfigError::EmptyCommand)
                 .with_section(|| format!("{section}[{idx}]").header("Location"))
@@ -243,27 +279,8 @@ impl Config {
     }
 
     fn validate_config_window(root_dir: &Path, idx: usize, window: Window) -> Result<SpawnWindow> {
-        let command = window
-            .command
-            .map(|cmd| -> Result<_> {
-                let command = Self::validate_command("Window.command", idx, &cmd)?;
-                let remain = match window.on_exit {
-                    OnExit::Shell => {
-                        return Ok(WindowCommand::Run {
-                            run: cmd,
-                            name: command
-                                .into_iter()
-                                .next()
-                                .expect("validate returns a non-empty command"),
-                        });
-                    }
-                    OnExit::Destroy => Some(false),
-                    OnExit::Deactivate => Some(true),
-                    OnExit::ServerConfig => None,
-                };
-                Ok(WindowCommand::Command { command, remain })
-            })
-            .transpose()?;
+        let dir = Self::validate_dir(root_dir, idx, "Window", window.dir)?;
+        let command = Self::validate_command(idx, "Window", window.command)?;
 
         let name = window
             .name
@@ -273,9 +290,82 @@ impl Config {
             .filter(|o| !o.is_empty())
             .map_or_else(|| format!("Window[{idx}]"), ToOwned::to_owned);
 
-        let mut dir = window.dir;
+        let window = SpawnWindow { name, dir, command };
+        Ok(window)
+    }
+
+    fn validate_layout(root_dir: &Path, layout: Layout) -> Result<init::Layout> {
+        fn recurse(root_dir: &Path, index: &mut usize, layout: Layout) -> Result<init::Layout> {
+            match layout {
+                Layout::Split { size, axis, panes } => {
+                    let panes = panes
+                        .into_iter()
+                        .map(|p| recurse(root_dir, index, p))
+                        .collect::<Result<Vec<_>>>()?;
+                    let layout = init::SplitLayout { axis, panes };
+                    let layout = init::SubLayout::Split(layout);
+                    let layout = init::Layout { size, layout };
+                    Ok(layout)
+                }
+                Layout::Pane { size, dir, cmd } => {
+                    let idx = *index;
+                    *index += 1;
+                    let dir = Config::validate_dir(root_dir, idx, "Layout", dir)?;
+                    let command = Config::validate_command(idx, "Layout", cmd)?;
+                    let layout = init::PaneLayout { dir, command };
+                    let layout = init::SubLayout::Pane(layout);
+                    let layout = init::Layout { size, layout };
+                    Ok(layout)
+                }
+            }
+        }
+
+        let mut index = 0;
+        recurse(root_dir, &mut index, layout)
+    }
+
+    fn validate_command(
+        idx: usize,
+        section: &str,
+        command: Command,
+    ) -> Result<Option<WindowCommand>> {
+        let window_command = command
+            .cmd
+            .map(|cmd| -> Result<_> {
+                let valid_cmd =
+                    Self::validate_run_command(&format!("{section}.command"), idx, &cmd)?;
+                let remain = match command.on_exit {
+                    OnExit::Shell => {
+                        return Ok(WindowCommand::Run {
+                            run: cmd,
+                            name: valid_cmd
+                                .into_iter()
+                                .next()
+                                .expect("validate returns a non-empty command"),
+                        });
+                    }
+                    OnExit::Destroy => Some(false),
+                    OnExit::Deactivate => Some(true),
+                    OnExit::ServerConfig => None,
+                };
+                Ok(WindowCommand::Command {
+                    command: valid_cmd,
+                    remain,
+                })
+            })
+            .transpose()?;
+
+        Ok(window_command)
+    }
+
+    fn validate_dir(
+        root_dir: &Path,
+        idx: usize,
+        section: &str,
+        mut dir: Option<PathBuf>,
+    ) -> Result<Option<PathBuf>> {
         if let Some(dir) = dir.as_mut() {
-            trace!(dir = %dir.display(), "Attempting to use dir as base for new window");
+            trace!(dir = %dir.display(), "Attempting to use dir as base");
 
             if dir.is_relative() {
                 *dir = root_dir.join(dir.as_path());
@@ -283,23 +373,21 @@ impl Config {
 
             *dir = dir.canonicalize().map_err(|e| {
                 eyre!(ConfigError::InvalidWindowDir(e))
-                    .with_section(|| format!("Window[{idx}]").header("Location"))
+                    .with_section(|| format!("{section}[{idx}]").header("Location"))
                     .with_section(|| dir.display().to_string().header("Directory"))
                     .note("The path might not exist or contain non-directory segments")
             })?;
 
             if !dir.is_dir() {
                 return Err(eyre!(ConfigError::NotADirectory)
-                    .with_section(|| format!("Window[{idx}]").header("Location"))
+                    .with_section(|| format!("{section}[{idx}]").header("Location"))
                     .with_section(|| dir.display().to_string().header("Directory")));
             }
 
-            trace!(dir = %dir.display(), "Using dir as base for new window");
+            trace!(dir = %dir.display(), "Using dir as base");
         }
 
-        let window = SpawnWindow { name, dir, command };
-
-        Ok(window)
+        Ok(dir)
     }
 
     pub fn edit_config_file_in(
@@ -374,7 +462,7 @@ impl Config {
         let mut line_num = None;
 
         'editing: loop {
-            let mut cmd = Command::new(editor);
+            let mut cmd = Proc::new(editor);
             let _ = cmd.arg(path);
             if let Some(line_num) = line_num {
                 let _ = cmd.arg(format!("+{line_num}"));
@@ -560,7 +648,7 @@ impl EnvValue {
                 })
                 .collect::<Result<String, _>>(),
             Self::Command { program, args } => {
-                let mut cmd = Command::new(program);
+                let mut cmd = Proc::new(program);
                 args.into_iter().try_for_each(|arg| {
                     let arg = arg.resolve(get_env, add_env)?;
                     let _ = cmd.arg(arg);
@@ -748,7 +836,7 @@ impl<'de> Deserialize<'de> for Config {
     where
         D: Deserializer<'de>,
     {
-        const FIELDS: &[&str] = &["env", "window", "windows", "run"];
+        const FIELDS: &[&str] = &["env", "window", "windows", "run", "layout"];
 
         struct Vis;
         impl<'de> Visitor<'de> for Vis {
@@ -764,7 +852,7 @@ impl<'de> Deserialize<'de> for Config {
                 A: MapAccess<'de>,
             {
                 let mut config = Config::default();
-                let mut free = [true; 3];
+                let mut free = [true; 4];
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -785,6 +873,12 @@ impl<'de> Deserialize<'de> for Config {
                                 return Err(A::Error::duplicate_field("run"));
                             }
                             config.run = map.next_value()?;
+                        }
+                        "layout" => {
+                            if !mem::take(&mut free[3]) {
+                                return Err(A::Error::duplicate_field("layout"));
+                            }
+                            config.layout = map.next_value()?;
                         }
                         otherwise => return Err(A::Error::unknown_field(otherwise, FIELDS)),
                     }
@@ -854,13 +948,13 @@ impl<'de> Deserialize<'de> for Window {
                             if !mem::take(&mut free[2]) {
                                 return Err(A::Error::duplicate_field("command"));
                             }
-                            window.command = map.next_value()?;
+                            window.command.cmd = map.next_value()?;
                         }
                         "keep-alive" | "on-exit" | "remain" => {
                             if !mem::take(&mut free[3]) {
                                 return Err(A::Error::duplicate_field("on-exit"));
                             }
-                            window.on_exit = map.next_value()?;
+                            window.command.on_exit = map.next_value()?;
                         }
                         otherwise => return Err(A::Error::unknown_field(otherwise, FIELDS)),
                     }
@@ -915,6 +1009,214 @@ impl<'de> Deserialize<'de> for Run {
     }
 }
 
+impl<'de> Deserialize<'de> for Layout {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct("Pane", LayoutVisitor::FIELDS, LayoutVisitor)
+    }
+}
+
+struct LayoutVisitor;
+
+impl LayoutVisitor {
+    const FIELDS: &[&str] = &[
+        "size",
+        "split",
+        "axis",
+        "panes",
+        "cwd",
+        "dir",
+        "path",
+        "pwd",
+        "wd",
+        "workdir",
+        "cmd",
+        "command",
+        "run",
+        "keep-alive",
+        "on-exit",
+        "remain",
+    ];
+}
+
+impl<'de> Visitor<'de> for LayoutVisitor {
+    type Value = Layout;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Formatter::write_str(formatter, "struct Layout")
+    }
+
+    #[inline]
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut size = None::<String>;
+        let mut axis = None::<Axis>;
+        let mut panes = Vec::<Layout>::new();
+        let mut dir = None::<PathBuf>;
+        let mut cmd = Command::default();
+        let mut free = [true; 6];
+
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "size" => {
+                    if !mem::take(&mut free[0]) {
+                        return Err(A::Error::duplicate_field("size"));
+                    }
+                    size = map.next_value()?;
+                }
+                "split" | "axis" => {
+                    if !mem::take(&mut free[1]) {
+                        return Err(A::Error::duplicate_field("split"));
+                    }
+                    axis = map.next_value()?;
+                }
+                "pane" | "panes" => {
+                    if !mem::take(&mut free[2]) {
+                        return Err(A::Error::duplicate_field("panes"));
+                    }
+                    panes = map.next_value::<Panes>()?.0;
+                }
+                "cwd" | "dir" | "path" | "pwd" | "wd" | "workdir" => {
+                    if !mem::take(&mut free[3]) {
+                        return Err(A::Error::duplicate_field("dir"));
+                    }
+                    dir = map.next_value()?;
+                }
+                "cmd" | "command" | "run" => {
+                    if !mem::take(&mut free[4]) {
+                        return Err(A::Error::duplicate_field("command"));
+                    }
+                    cmd.cmd = map.next_value()?;
+                }
+                "keep-alive" | "on-exit" | "remain" => {
+                    if !mem::take(&mut free[5]) {
+                        return Err(A::Error::duplicate_field("on-exit"));
+                    }
+                    cmd.on_exit = map.next_value()?;
+                }
+                otherwise => return Err(A::Error::unknown_field(otherwise, Self::FIELDS)),
+            }
+        }
+
+        if let Some(axis) = axis {
+            if dir.is_some() || cmd.cmd.is_some() {
+                return Err(A::Error::custom(concat!(
+                    "Conflicting fields: Use either `split` together with `panes` or ",
+                    "`dir` together with `cmd`",
+                )));
+            }
+            if panes.is_empty() {
+                return Err(A::Error::custom(format!(
+                    "A {axis:?} split needs at least one `pane`"
+                )));
+            }
+            Ok(Layout::Split { size, axis, panes })
+        } else {
+            Ok(Layout::Pane { size, dir, cmd })
+        }
+    }
+}
+
+struct Panes(Vec<Layout>);
+
+impl<'de> Deserialize<'de> for Panes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Vis;
+        impl<'de> Visitor<'de> for Vis {
+            type Value = Panes;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("Single pane or list of panes")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                self.visit_string(v.to_owned())
+            }
+
+            fn visit_string<E>(self, v: String) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let pane = Layout::Pane {
+                    cmd: Command {
+                        cmd: Some(v),
+                        ..Default::default()
+                    },
+                    size: None,
+                    dir: None,
+                };
+                Ok(Panes(vec![pane]))
+            }
+
+            fn visit_map<A>(self, map: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let pane = LayoutVisitor.visit_map(map)?;
+                Ok(Panes(vec![pane]))
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut panes = seq.size_hint().map_or_else(Vec::new, Vec::with_capacity);
+                while let Some(pane) = seq.next_element()? {
+                    panes.push(pane);
+                }
+
+                Ok(Panes(panes))
+            }
+        }
+
+        deserializer.deserialize_any(Vis)
+    }
+}
+
+impl<'de> Deserialize<'de> for Axis {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        const VARIANTS: &[&str] = &["horizontal", "vertical"];
+
+        struct LocationVisitor;
+        impl Visitor<'_> for LocationVisitor {
+            type Value = Axis;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a valid `Axis` value: Either horizontal or vertical")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let stripped = v.trim_start_matches('-');
+                if "horizontal".starts_with(stripped) {
+                    Ok(Axis::Horizontal)
+                } else if "vertical".starts_with(stripped) {
+                    Ok(Axis::Vertical)
+                } else {
+                    Err(serde::de::Error::unknown_variant(v, VARIANTS))
+                }
+            }
+        }
+
+        deserializer.deserialize_any(LocationVisitor)
+    }
+}
+
 impl<'de> Deserialize<'de> for OnExit {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -928,7 +1230,7 @@ impl<'de> Deserialize<'de> for OnExit {
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str(concat!(
-                    "a valid `on-exit` value: One of ",
+                    "a valid `on-exit` value: ",
                     r#"One of "destroy" or `true`, "deactivate", or "shell" or `false`"#
                 ))
             }
@@ -1224,42 +1526,122 @@ mod tests {
         );
     }
 
+    const fn test_toml() -> &'static str {
+        r#"
+[env]
+FOO = "bar"
+BAZ = "qux"
+
+[[run]]
+cmd = "echo hello"
+
+[[window]]
+name = "test"
+pwd = "dir"
+cmd = "echo world"
+on-exit = "stay"
+
+[layout]
+split = "vertical"
+
+[[layout.panes]]
+size = "80%"
+split = "horizontal"
+
+[[layout.panes.panes]]
+size = "70%"
+command = "echo 'top left'"
+
+[[layout.panes.panes]]
+size = "30%"
+command = "echo 'top right'"
+
+[[layout.panes]]
+size = "20%"
+split = "horizontal"
+
+[[layout.panes.panes]]
+size = "60%"
+command = "echo 'bottom left'"
+
+[[layout.panes.panes]]
+size = "40%"
+command = "echo 'bottom right'"
+"#
+    }
+
     #[test]
     fn toml_format() {
-        let config = r#"
-            [env]
-            FOO = "bar"
-            BAZ = "qux"
-
-            [[run]]
-            cmd = "echo hello"
-
-            [[window]]
-            name = "test"
-            pwd = "dir"
-            cmd = "echo world"
-            on-exit = "stay"
-        "#;
-
-        let config = toml::from_str::<Config>(config).unwrap();
-        assert_eq!(
-            config,
-            Config {
-                env: vec![
-                    ("FOO".to_owned(), EnvValue::Value("bar".to_owned())),
-                    ("BAZ".to_owned(), EnvValue::Value("qux".to_owned())),
-                ],
-                run: vec![Run {
-                    command: "echo hello".to_owned()
-                }],
-                windows: vec![Window {
-                    name: Some("test".to_owned()),
-                    dir: Some("dir".into()),
-                    command: Some("echo world".to_owned()),
+        let expected = Config {
+            env: vec![
+                ("FOO".to_owned(), EnvValue::Value("bar".to_owned())),
+                ("BAZ".to_owned(), EnvValue::Value("qux".to_owned())),
+            ],
+            run: vec![Run {
+                command: "echo hello".to_owned(),
+            }],
+            windows: vec![Window {
+                name: Some("test".to_owned()),
+                dir: Some("dir".into()),
+                command: Command {
+                    cmd: Some("echo world".to_owned()),
                     on_exit: OnExit::Shell,
-                }],
-            }
-        );
+                },
+            }],
+            layout: Some(Layout::Split {
+                size: None,
+                axis: Axis::Vertical,
+                panes: vec![
+                    Layout::Split {
+                        size: Some("80%".to_owned()),
+                        axis: Axis::Horizontal,
+                        panes: vec![
+                            Layout::Pane {
+                                size: Some("70%".to_owned()),
+                                dir: None,
+                                cmd: Command {
+                                    cmd: Some("echo 'top left'".to_owned()),
+                                    ..Default::default()
+                                },
+                            },
+                            Layout::Pane {
+                                size: Some("30%".to_owned()),
+                                dir: None,
+                                cmd: Command {
+                                    cmd: Some("echo 'top right'".to_owned()),
+                                    ..Default::default()
+                                },
+                            },
+                        ],
+                    },
+                    Layout::Split {
+                        size: Some("20%".to_owned()),
+                        axis: Axis::Horizontal,
+                        panes: vec![
+                            Layout::Pane {
+                                size: Some("60%".to_owned()),
+                                dir: None,
+                                cmd: Command {
+                                    cmd: Some("echo 'bottom left'".to_owned()),
+                                    ..Default::default()
+                                },
+                            },
+                            Layout::Pane {
+                                size: Some("40%".to_owned()),
+                                dir: None,
+                                cmd: Command {
+                                    cmd: Some("echo 'bottom right'".to_owned()),
+                                    ..Default::default()
+                                },
+                            },
+                        ],
+                    },
+                ],
+            }),
+        };
+
+        let config = toml::from_str::<Config>(test_toml()).unwrap();
+        assert_eq!(config, expected);
     }
 
     fn test_run_aliases(cmd: &str) {
@@ -1337,7 +1719,10 @@ mod tests {
             config,
             Config {
                 windows: vec![Window {
-                    command: Some("echo world".to_owned()),
+                    command: Command {
+                        cmd: Some("echo world".to_owned()),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -1424,7 +1809,10 @@ mod tests {
             config,
             Config {
                 windows: vec![Window {
-                    on_exit: OnExit::Shell,
+                    command: Command {
+                        on_exit: OnExit::Shell,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -1460,7 +1848,10 @@ mod tests {
             config,
             Config {
                 windows: vec![Window {
-                    on_exit: expected,
+                    command: Command {
+                        on_exit: expected,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 }],
                 ..Default::default()
