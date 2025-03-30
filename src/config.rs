@@ -116,15 +116,17 @@ struct Window {
     name: Option<String>,
     dir: Option<PathBuf>,
     command: Option<String>,
-    on_exit: Option<OnExit>,
+    on_exit: OnExit,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone, Default)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 enum OnExit {
+    #[default]
+    Shell,
     Destroy,
     Deactivate,
-    Shell,
+    ServerConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -246,7 +248,7 @@ impl Config {
             .map(|cmd| -> Result<_> {
                 let command = Self::validate_command("Window.command", idx, &cmd)?;
                 let remain = match window.on_exit {
-                    Some(OnExit::Shell) => {
+                    OnExit::Shell => {
                         return Ok(WindowCommand::Run {
                             run: cmd,
                             name: command
@@ -255,9 +257,9 @@ impl Config {
                                 .expect("validate returns a non-empty command"),
                         });
                     }
-                    Some(OnExit::Destroy) => Some(false),
-                    Some(OnExit::Deactivate) => Some(true),
-                    None => None,
+                    OnExit::Destroy => Some(false),
+                    OnExit::Deactivate => Some(true),
+                    OnExit::ServerConfig => None,
                 };
                 Ok(WindowCommand::Command { command, remain })
             })
@@ -950,6 +952,7 @@ impl<'de> Deserialize<'de> for OnExit {
                     "destroy" | "kill" => Ok(OnExit::Destroy),
                     "deactivate" | "inactive" | "remain" => Ok(OnExit::Deactivate),
                     "keep" | "shell" | "stay" => Ok(OnExit::Shell),
+                    "default" | "server" => Ok(OnExit::ServerConfig),
                     _ => Err(serde::de::Error::unknown_variant(v, VARIANTS)),
                 }
             }
@@ -1253,7 +1256,7 @@ mod tests {
                     name: Some("test".to_owned()),
                     dir: Some("dir".into()),
                     command: Some("echo world".to_owned()),
-                    on_exit: Some(OnExit::Shell),
+                    on_exit: OnExit::Shell,
                 }],
             }
         );
@@ -1421,7 +1424,7 @@ mod tests {
             config,
             Config {
                 windows: vec![Window {
-                    on_exit: Some(OnExit::Shell),
+                    on_exit: OnExit::Shell,
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -1457,7 +1460,7 @@ mod tests {
             config,
             Config {
                 windows: vec![Window {
-                    on_exit: Some(expected),
+                    on_exit: expected,
                     ..Default::default()
                 }],
                 ..Default::default()
