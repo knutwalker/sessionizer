@@ -26,7 +26,7 @@ impl Select for Entry {
     }
 
     fn render_before_content(&self) -> Option<impl Display + '_> {
-        if let Self::Project(ref project) = self {
+        if let Self::Project(project) = self {
             Some(project)
         } else {
             None
@@ -34,7 +34,7 @@ impl Select for Entry {
     }
 
     fn render_after_content(&self) -> Option<impl Display + '_> {
-        if let Self::Session(ref tmux) = self {
+        if let Self::Session(tmux) = self {
             Some(tmux)
         } else {
             None

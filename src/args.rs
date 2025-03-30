@@ -1,6 +1,6 @@
 use std::{env, fmt, io, iter, path::PathBuf};
 
-use clap::{value_parser, Arg, ArgAction, ArgGroup, ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgGroup, ArgMatches, Command, value_parser};
 
 use crate::{
     config::{ConfigError, EnvError},
@@ -265,10 +265,18 @@ impl Action {
         let level = if cfg!(debug_assertions) { "full" } else { "0" };
 
         if env::var_os("RUST_LIB_BACKTRACE").is_none() {
-            env::set_var("RUST_LIB_BACKTRACE", level);
+            // SAFETY: we're still single-threaded at this point
+            #[allow(unsafe_code)]
+            unsafe {
+                env::set_var("RUST_LIB_BACKTRACE", level);
+            }
         }
         if env::var_os("RUST_BACKTRACE").is_none() {
-            env::set_var("RUST_BACKTRACE", level);
+            // SAFETY: we're still single-threaded at this point
+            #[allow(unsafe_code)]
+            unsafe {
+                env::set_var("RUST_BACKTRACE", level);
+            }
         }
 
         let fmt_layer = fmt::layer()
