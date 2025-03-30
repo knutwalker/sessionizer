@@ -17,16 +17,16 @@ bytecount = "0.6.8"
 clap = { version = "4.5.7", features = ["env"] }
 color-eyre = { version = "0.6.3", features = ["issue-url"] }
 concolor = { version = "0.1.1", features = [
-  "api",
-  "clicolor",
-  "interactive",
-  "no_color",
+    "api",
+    "clicolor",
+    "interactive",
+    "no_color",
 ] }
 fuzzy-select = "0.1.2"
 home = "0.5.9"
 ignore = "0.4.21"
 inquire = { version = "0.7.5", default-features = false, features = [
-  "crossterm",
+    "crossterm",
 ] }
 onlyerror = "0.1.4"
 panic-message = "0.3.0"
