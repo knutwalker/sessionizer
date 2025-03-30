@@ -82,7 +82,19 @@ pub fn create_config_file() -> Result<(), InitError> {
 
 pub fn edit_config_file(secure: bool) -> Result<()> {
     let cwd = env::current_dir().map_err(InitError::InvalidCwd)?;
-    let init = InitFile::require_in(&cwd)?;
+
+    let init = loop {
+        match InitFile::require_in(&cwd) {
+            Ok(init) => break init,
+            Err(e) => match e.downcast_ref::<InitError>() {
+                Some(InitError::NoConfigFile) => {
+                    create_config_file()?;
+                    continue;
+                }
+                _ => return Err(e),
+            },
+        };
+    };
     Config::edit_config_file_in(&init.path, |path| {
         let tmp_file = InitFile {
             path: path.to_path_buf(),
