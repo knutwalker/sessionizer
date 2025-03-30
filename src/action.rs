@@ -81,6 +81,7 @@ fn build_command(
                     Ok(v) => v,
                     Err(e) => {
                         return Err(eyre!(e).section(k.header("Variable:")).note(
+                            #[allow(clippy::literal_string_with_formatting_args)]
                             "You can provide a default value by using ${VAR_NAME:-default_value}",
                         ));
                     }

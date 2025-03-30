@@ -273,7 +273,7 @@ impl Config {
 
         let mut dir = window.dir;
         if let Some(dir) = dir.as_mut() {
-            trace!(dir = %dir.display(), "Attemting to use dir as base for new window");
+            trace!(dir = %dir.display(), "Attempting to use dir as base for new window");
 
             if dir.is_relative() {
                 *dir = root_dir.join(dir.as_path());
