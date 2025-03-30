@@ -11,7 +11,7 @@ use onlyerror::Error;
 
 use crate::{
     Result,
-    config::{Config, ConfigError, EnvValue},
+    config::{Axis, Config, ConfigError, EnvValue},
     eyre, trace,
 };
 
@@ -20,11 +20,36 @@ pub struct Init {
     pub env: Vec<(String, EnvValue)>,
     pub run: Vec<String>,
     pub windows: Vec<SpawnWindow>,
+    pub layout: Option<Box<Layout>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct SpawnWindow {
     pub name: String,
+    pub dir: Option<PathBuf>,
+    pub command: Option<WindowCommand>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Layout {
+    pub size: Option<String>,
+    pub layout: SubLayout,
+}
+
+#[derive(Debug, Clone)]
+pub enum SubLayout {
+    Split(SplitLayout),
+    Pane(PaneLayout),
+}
+
+#[derive(Debug, Clone)]
+pub struct SplitLayout {
+    pub axis: Axis,
+    pub panes: Vec<Layout>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PaneLayout {
     pub dir: Option<PathBuf>,
     pub command: Option<WindowCommand>,
 }

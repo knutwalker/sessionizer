@@ -29,7 +29,7 @@ use winnow::{
 
 use crate::{
     Result, debug, eyre, info,
-    init::{Init, SpawnWindow, WindowCommand},
+    init::{self, Init, SpawnWindow, WindowCommand},
     trace,
 };
 
@@ -89,6 +89,7 @@ pub struct Config {
     env: Vec<(String, EnvValue)>,
     windows: Vec<Window>,
     run: Vec<Run>,
+    layout: Option<Layout>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,11 +119,33 @@ struct Window {
     command: Command,
 }
 
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+enum Layout {
+    Split {
+        size: Option<String>,
+        axis: Axis,
+        panes: Vec<Layout>,
+    },
+    Pane {
+        size: Option<String>,
+        dir: Option<PathBuf>,
+        cmd: Command,
+    },
+}
+
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 struct Command {
     cmd: Option<String>,
     on_exit: OnExit,
+}
+
+#[derive(Debug, Copy, Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+pub enum Axis {
+    Horizontal,
+    Vertical,
 }
 
 #[derive(Debug, Copy, Clone, Default)]
@@ -208,10 +231,17 @@ impl Config {
                 .with_section(|| k.clone().header("Variable:"))
         })?;
 
+        let layout = self
+            .layout
+            .map(|l| Self::validate_layout(root_dir, l))
+            .transpose()?
+            .map(Box::new);
+
         let action = Init {
             env: self.env,
             run,
             windows,
+            layout,
         };
         Ok(action)
     }
@@ -262,6 +292,36 @@ impl Config {
 
         let window = SpawnWindow { name, dir, command };
         Ok(window)
+    }
+
+    fn validate_layout(root_dir: &Path, layout: Layout) -> Result<init::Layout> {
+        fn recurse(root_dir: &Path, index: &mut usize, layout: Layout) -> Result<init::Layout> {
+            match layout {
+                Layout::Split { size, axis, panes } => {
+                    let panes = panes
+                        .into_iter()
+                        .map(|p| recurse(root_dir, index, p))
+                        .collect::<Result<Vec<_>>>()?;
+                    let layout = init::SplitLayout { axis, panes };
+                    let layout = init::SubLayout::Split(layout);
+                    let layout = init::Layout { size, layout };
+                    Ok(layout)
+                }
+                Layout::Pane { size, dir, cmd } => {
+                    let idx = *index;
+                    *index += 1;
+                    let dir = Config::validate_dir(root_dir, idx, "Layout", dir)?;
+                    let command = Config::validate_command(idx, "Layout", cmd)?;
+                    let layout = init::PaneLayout { dir, command };
+                    let layout = init::SubLayout::Pane(layout);
+                    let layout = init::Layout { size, layout };
+                    Ok(layout)
+                }
+            }
+        }
+
+        let mut index = 0;
+        recurse(root_dir, &mut index, layout)
     }
 
     fn validate_command(
@@ -776,7 +836,7 @@ impl<'de> Deserialize<'de> for Config {
     where
         D: Deserializer<'de>,
     {
-        const FIELDS: &[&str] = &["env", "window", "windows", "run"];
+        const FIELDS: &[&str] = &["env", "window", "windows", "run", "layout"];
 
         struct Vis;
         impl<'de> Visitor<'de> for Vis {
@@ -792,7 +852,7 @@ impl<'de> Deserialize<'de> for Config {
                 A: MapAccess<'de>,
             {
                 let mut config = Config::default();
-                let mut free = [true; 3];
+                let mut free = [true; 4];
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -813,6 +873,12 @@ impl<'de> Deserialize<'de> for Config {
                                 return Err(A::Error::duplicate_field("run"));
                             }
                             config.run = map.next_value()?;
+                        }
+                        "layout" => {
+                            if !mem::take(&mut free[3]) {
+                                return Err(A::Error::duplicate_field("layout"));
+                            }
+                            config.layout = map.next_value()?;
                         }
                         otherwise => return Err(A::Error::unknown_field(otherwise, FIELDS)),
                     }
@@ -940,6 +1006,214 @@ impl<'de> Deserialize<'de> for Run {
         }
 
         deserializer.deserialize_struct("Run", FIELDS, Vis)
+    }
+}
+
+impl<'de> Deserialize<'de> for Layout {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_struct("Pane", LayoutVisitor::FIELDS, LayoutVisitor)
+    }
+}
+
+struct LayoutVisitor;
+
+impl LayoutVisitor {
+    const FIELDS: &[&str] = &[
+        "size",
+        "split",
+        "axis",
+        "panes",
+        "cwd",
+        "dir",
+        "path",
+        "pwd",
+        "wd",
+        "workdir",
+        "cmd",
+        "command",
+        "run",
+        "keep-alive",
+        "on-exit",
+        "remain",
+    ];
+}
+
+impl<'de> Visitor<'de> for LayoutVisitor {
+    type Value = Layout;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Formatter::write_str(formatter, "struct Layout")
+    }
+
+    #[inline]
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut size = None::<String>;
+        let mut axis = None::<Axis>;
+        let mut panes = Vec::<Layout>::new();
+        let mut dir = None::<PathBuf>;
+        let mut cmd = Command::default();
+        let mut free = [true; 6];
+
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "size" => {
+                    if !mem::take(&mut free[0]) {
+                        return Err(A::Error::duplicate_field("size"));
+                    }
+                    size = map.next_value()?;
+                }
+                "split" | "axis" => {
+                    if !mem::take(&mut free[1]) {
+                        return Err(A::Error::duplicate_field("split"));
+                    }
+                    axis = map.next_value()?;
+                }
+                "pane" | "panes" => {
+                    if !mem::take(&mut free[2]) {
+                        return Err(A::Error::duplicate_field("panes"));
+                    }
+                    panes = map.next_value::<Panes>()?.0;
+                }
+                "cwd" | "dir" | "path" | "pwd" | "wd" | "workdir" => {
+                    if !mem::take(&mut free[3]) {
+                        return Err(A::Error::duplicate_field("dir"));
+                    }
+                    dir = map.next_value()?;
+                }
+                "cmd" | "command" | "run" => {
+                    if !mem::take(&mut free[4]) {
+                        return Err(A::Error::duplicate_field("command"));
+                    }
+                    cmd.cmd = map.next_value()?;
+                }
+                "keep-alive" | "on-exit" | "remain" => {
+                    if !mem::take(&mut free[5]) {
+                        return Err(A::Error::duplicate_field("on-exit"));
+                    }
+                    cmd.on_exit = map.next_value()?;
+                }
+                otherwise => return Err(A::Error::unknown_field(otherwise, Self::FIELDS)),
+            }
+        }
+
+        if let Some(axis) = axis {
+            if dir.is_some() || cmd.cmd.is_some() {
+                return Err(A::Error::custom(concat!(
+                    "Conflicting fields: Use either `split` together with `panes` or ",
+                    "`dir` together with `cmd`",
+                )));
+            }
+            if panes.is_empty() {
+                return Err(A::Error::custom(format!(
+                    "A {axis:?} split needs at least one `pane`"
+                )));
+            }
+            Ok(Layout::Split { size, axis, panes })
+        } else {
+            Ok(Layout::Pane { size, dir, cmd })
+        }
+    }
+}
+
+struct Panes(Vec<Layout>);
+
+impl<'de> Deserialize<'de> for Panes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Vis;
+        impl<'de> Visitor<'de> for Vis {
+            type Value = Panes;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("Single pane or list of panes")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                self.visit_string(v.to_owned())
+            }
+
+            fn visit_string<E>(self, v: String) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let pane = Layout::Pane {
+                    cmd: Command {
+                        cmd: Some(v),
+                        ..Default::default()
+                    },
+                    size: None,
+                    dir: None,
+                };
+                Ok(Panes(vec![pane]))
+            }
+
+            fn visit_map<A>(self, map: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let pane = LayoutVisitor.visit_map(map)?;
+                Ok(Panes(vec![pane]))
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut panes = seq.size_hint().map_or_else(Vec::new, Vec::with_capacity);
+                while let Some(pane) = seq.next_element()? {
+                    panes.push(pane);
+                }
+
+                Ok(Panes(panes))
+            }
+        }
+
+        deserializer.deserialize_any(Vis)
+    }
+}
+
+impl<'de> Deserialize<'de> for Axis {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        const VARIANTS: &[&str] = &["horizontal", "vertical"];
+
+        struct LocationVisitor;
+        impl Visitor<'_> for LocationVisitor {
+            type Value = Axis;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a valid `Axis` value: Either horizontal or vertical")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let stripped = v.trim_start_matches('-');
+                if "horizontal".starts_with(stripped) {
+                    Ok(Axis::Horizontal)
+                } else if "vertical".starts_with(stripped) {
+                    Ok(Axis::Vertical)
+                } else {
+                    Err(serde::de::Error::unknown_variant(v, VARIANTS))
+                }
+            }
+        }
+
+        deserializer.deserialize_any(LocationVisitor)
     }
 }
 
@@ -1266,6 +1540,33 @@ name = "test"
 pwd = "dir"
 cmd = "echo world"
 on-exit = "stay"
+
+[layout]
+split = "vertical"
+
+[[layout.panes]]
+size = "80%"
+split = "horizontal"
+
+[[layout.panes.panes]]
+size = "70%"
+command = "echo 'top left'"
+
+[[layout.panes.panes]]
+size = "30%"
+command = "echo 'top right'"
+
+[[layout.panes]]
+size = "20%"
+split = "horizontal"
+
+[[layout.panes.panes]]
+size = "60%"
+command = "echo 'bottom left'"
+
+[[layout.panes.panes]]
+size = "40%"
+command = "echo 'bottom right'"
 "#
     }
 
@@ -1287,6 +1588,56 @@ on-exit = "stay"
                     on_exit: OnExit::Shell,
                 },
             }],
+            layout: Some(Layout::Split {
+                size: None,
+                axis: Axis::Vertical,
+                panes: vec![
+                    Layout::Split {
+                        size: Some("80%".to_owned()),
+                        axis: Axis::Horizontal,
+                        panes: vec![
+                            Layout::Pane {
+                                size: Some("70%".to_owned()),
+                                dir: None,
+                                cmd: Command {
+                                    cmd: Some("echo 'top left'".to_owned()),
+                                    ..Default::default()
+                                },
+                            },
+                            Layout::Pane {
+                                size: Some("30%".to_owned()),
+                                dir: None,
+                                cmd: Command {
+                                    cmd: Some("echo 'top right'".to_owned()),
+                                    ..Default::default()
+                                },
+                            },
+                        ],
+                    },
+                    Layout::Split {
+                        size: Some("20%".to_owned()),
+                        axis: Axis::Horizontal,
+                        panes: vec![
+                            Layout::Pane {
+                                size: Some("60%".to_owned()),
+                                dir: None,
+                                cmd: Command {
+                                    cmd: Some("echo 'bottom left'".to_owned()),
+                                    ..Default::default()
+                                },
+                            },
+                            Layout::Pane {
+                                size: Some("40%".to_owned()),
+                                dir: None,
+                                cmd: Command {
+                                    cmd: Some("echo 'bottom right'".to_owned()),
+                                    ..Default::default()
+                                },
+                            },
+                        ],
+                    },
+                ],
+            }),
         };
 
         let config = toml::from_str::<Config>(test_toml()).unwrap();

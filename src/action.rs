@@ -7,7 +7,12 @@ use std::{
 
 use color_eyre::{Section as _, SectionExt as _};
 
-use crate::{Init, Result, WindowCommand, config::EnvValue, debug, eyre, init::SpawnWindow};
+use crate::{
+    Init, Result, WindowCommand,
+    config::{Axis, EnvValue},
+    debug, eyre,
+    init::{Layout, SpawnWindow, SubLayout},
+};
 
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -89,6 +94,9 @@ fn build_create_command(
 
     create_run(&on_init.run, &session_id, cmd);
     create_windows(name, &on_init.windows, cmd);
+    if let Some(ref layout) = on_init.layout {
+        create_root_layout(layout, cmd);
+    }
 
     Ok(())
 }
@@ -154,6 +162,53 @@ fn create_windows(session_name: &str, windows: &[SpawnWindow], cmd: &mut Command
             create_command(&window.name, &window_selector, command, cmd);
         }
     }
+}
+
+fn create_root_layout(layout: &Layout, cmd: &mut Command) {
+    fn recurse(layout: &Layout, index: &mut usize, cmd: &mut Command) {
+        match &layout.layout {
+            SubLayout::Split(split) => {
+                let idx = *index;
+
+                let split_dir = match split.axis {
+                    Axis::Horizontal => "-h",
+                    Axis::Vertical => "-v",
+                };
+
+                for sub in split.panes.iter().skip(1) {
+                    let _ = cmd.args([";", "split-window", "-d", split_dir]);
+
+                    if let Some(size) = sub.size.as_ref() {
+                        let _ = cmd.args(["-l", size]);
+                    }
+
+                    let pane_sel = format!(".{idx}");
+                    let _ = cmd.args(["-t", &pane_sel]);
+
+                    if let SubLayout::Pane(ref pane) = sub.layout {
+                        if let Some(dir) = &pane.dir {
+                            let _ = cmd.arg("-c").arg(dir);
+                        }
+                    }
+                }
+
+                for pane in &split.panes {
+                    recurse(pane, index, cmd);
+                }
+            }
+            SubLayout::Pane(pane) => {
+                let idx = *index;
+                *index += 1;
+                if let Some(command) = pane.command.as_ref() {
+                    let pane_sel = format!(".{idx}");
+                    create_command(&pane_sel, &pane_sel, command, cmd);
+                }
+            }
+        }
+    }
+
+    let mut index = 0;
+    recurse(layout, &mut index, cmd);
 }
 
 fn create_command(short_name: &str, full_name: &str, wc: &WindowCommand, cmd: &mut Command) {

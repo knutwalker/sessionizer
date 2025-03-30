@@ -19,4 +19,38 @@
 #
 # command = "the command to run in the main window"
 
+# [layout]
+#
+# The `layout` can be used to describe the pane layout of the initial window.
+# A layout must be either a `split` together with at least one sub layout in
+# the `panes` array, or it is an entry like `run` (`command`, `dir`, `on-exit`).
+# The following example configures 4 panes, first in a vertical split, then
+# each of those has two panes in a horizontal split
+
+# split = "vertical"
+#
+# [[layout.panes]]
+# size = "80%" # The size parameter of the first entry in each panes section
+#              # is ignored. Its value is implied from the remainder after
+#              # spawning all the other panes in this split.
+# split = "horizontal"
+#
+# [[layout.panes.panes]]
+# command = "echo 'top left'"
+#
+# [[layout.panes.panes]]
+# size = "30%"
+# command = "echo 'top right'"
+#
+# [[layout.panes]]
+# size = "20%"
+# split = "horizontal"
+#
+# [[layout.panes.panes]]
+# command = "echo 'bottom left'"
+#
+# [[layout.panes.panes]]
+# size = "40%"
+# command = "echo 'bottom right'"
+
 # vim: set ft=toml:
