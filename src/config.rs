@@ -1252,44 +1252,45 @@ mod tests {
         );
     }
 
+    const fn test_toml() -> &'static str {
+        r#"
+[env]
+FOO = "bar"
+BAZ = "qux"
+
+[[run]]
+cmd = "echo hello"
+
+[[window]]
+name = "test"
+pwd = "dir"
+cmd = "echo world"
+on-exit = "stay"
+"#
+    }
+
     #[test]
     fn toml_format() {
-        let config = r#"
-            [env]
-            FOO = "bar"
-            BAZ = "qux"
+        let expected = Config {
+            env: vec![
+                ("FOO".to_owned(), EnvValue::Value("bar".to_owned())),
+                ("BAZ".to_owned(), EnvValue::Value("qux".to_owned())),
+            ],
+            run: vec![Run {
+                command: "echo hello".to_owned(),
+            }],
+            windows: vec![Window {
+                name: Some("test".to_owned()),
+                dir: Some("dir".into()),
+                command: Command {
+                    cmd: Some("echo world".to_owned()),
+                    on_exit: OnExit::Shell,
+                },
+            }],
+        };
 
-            [[run]]
-            cmd = "echo hello"
-
-            [[window]]
-            name = "test"
-            pwd = "dir"
-            cmd = "echo world"
-            on-exit = "stay"
-        "#;
-
-        let config = toml::from_str::<Config>(config).unwrap();
-        assert_eq!(
-            config,
-            Config {
-                env: vec![
-                    ("FOO".to_owned(), EnvValue::Value("bar".to_owned())),
-                    ("BAZ".to_owned(), EnvValue::Value("qux".to_owned())),
-                ],
-                run: vec![Run {
-                    command: "echo hello".to_owned()
-                }],
-                windows: vec![Window {
-                    name: Some("test".to_owned()),
-                    dir: Some("dir".into()),
-                    command: Command {
-                        cmd: Some("echo world".to_owned()),
-                        on_exit: OnExit::Shell,
-                    }
-                }],
-            }
-        );
+        let config = toml::from_str::<Config>(test_toml()).unwrap();
+        assert_eq!(config, expected);
     }
 
     fn test_run_aliases(cmd: &str) {
