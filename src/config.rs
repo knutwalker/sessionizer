@@ -8,7 +8,7 @@ use std::{
     mem,
     os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
     path::{Path, PathBuf},
-    process::Command,
+    process::Command as Proc,
 };
 
 use color_eyre::{Section as _, SectionExt as _, eyre::Context as _};
@@ -115,7 +115,13 @@ pub enum EnvVariable {
 struct Window {
     name: Option<String>,
     dir: Option<PathBuf>,
-    command: Option<String>,
+    command: Command,
+}
+
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+struct Command {
+    cmd: Option<String>,
     on_exit: OnExit,
 }
 
@@ -181,7 +187,7 @@ impl Config {
             .into_iter()
             .enumerate()
             .map(|(idx, run)| {
-                let _ = Self::validate_command("Run", idx, &run.command)?;
+                let _ = Self::validate_run_command("Run", idx, &run.command)?;
                 Ok(run.command)
             })
             .collect::<Result<_>>()?;
@@ -210,7 +216,7 @@ impl Config {
         Ok(action)
     }
 
-    fn validate_command(section: &str, idx: usize, cmd: &str) -> Result<Vec<String>> {
+    fn validate_run_command(section: &str, idx: usize, cmd: &str) -> Result<Vec<String>> {
         if cmd.trim().is_empty() {
             return Err(eyre!(ConfigError::EmptyCommand)
                 .with_section(|| format!("{section}[{idx}]").header("Location"))
@@ -243,27 +249,8 @@ impl Config {
     }
 
     fn validate_config_window(root_dir: &Path, idx: usize, window: Window) -> Result<SpawnWindow> {
-        let command = window
-            .command
-            .map(|cmd| -> Result<_> {
-                let command = Self::validate_command("Window.command", idx, &cmd)?;
-                let remain = match window.on_exit {
-                    OnExit::Shell => {
-                        return Ok(WindowCommand::Run {
-                            run: cmd,
-                            name: command
-                                .into_iter()
-                                .next()
-                                .expect("validate returns a non-empty command"),
-                        });
-                    }
-                    OnExit::Destroy => Some(false),
-                    OnExit::Deactivate => Some(true),
-                    OnExit::ServerConfig => None,
-                };
-                Ok(WindowCommand::Command { command, remain })
-            })
-            .transpose()?;
+        let dir = Self::validate_dir(root_dir, idx, "Window", window.dir)?;
+        let command = Self::validate_command(idx, "Window", window.command)?;
 
         let name = window
             .name
@@ -273,9 +260,52 @@ impl Config {
             .filter(|o| !o.is_empty())
             .map_or_else(|| format!("Window[{idx}]"), ToOwned::to_owned);
 
-        let mut dir = window.dir;
+        let window = SpawnWindow { name, dir, command };
+        Ok(window)
+    }
+
+    fn validate_command(
+        idx: usize,
+        section: &str,
+        command: Command,
+    ) -> Result<Option<WindowCommand>> {
+        let window_command = command
+            .cmd
+            .map(|cmd| -> Result<_> {
+                let valid_cmd =
+                    Self::validate_run_command(&format!("{section}.command"), idx, &cmd)?;
+                let remain = match command.on_exit {
+                    OnExit::Shell => {
+                        return Ok(WindowCommand::Run {
+                            run: cmd,
+                            name: valid_cmd
+                                .into_iter()
+                                .next()
+                                .expect("validate returns a non-empty command"),
+                        });
+                    }
+                    OnExit::Destroy => Some(false),
+                    OnExit::Deactivate => Some(true),
+                    OnExit::ServerConfig => None,
+                };
+                Ok(WindowCommand::Command {
+                    command: valid_cmd,
+                    remain,
+                })
+            })
+            .transpose()?;
+
+        Ok(window_command)
+    }
+
+    fn validate_dir(
+        root_dir: &Path,
+        idx: usize,
+        section: &str,
+        mut dir: Option<PathBuf>,
+    ) -> Result<Option<PathBuf>> {
         if let Some(dir) = dir.as_mut() {
-            trace!(dir = %dir.display(), "Attempting to use dir as base for new window");
+            trace!(dir = %dir.display(), "Attempting to use dir as base");
 
             if dir.is_relative() {
                 *dir = root_dir.join(dir.as_path());
@@ -283,23 +313,21 @@ impl Config {
 
             *dir = dir.canonicalize().map_err(|e| {
                 eyre!(ConfigError::InvalidWindowDir(e))
-                    .with_section(|| format!("Window[{idx}]").header("Location"))
+                    .with_section(|| format!("{section}[{idx}]").header("Location"))
                     .with_section(|| dir.display().to_string().header("Directory"))
                     .note("The path might not exist or contain non-directory segments")
             })?;
 
             if !dir.is_dir() {
                 return Err(eyre!(ConfigError::NotADirectory)
-                    .with_section(|| format!("Window[{idx}]").header("Location"))
+                    .with_section(|| format!("{section}[{idx}]").header("Location"))
                     .with_section(|| dir.display().to_string().header("Directory")));
             }
 
-            trace!(dir = %dir.display(), "Using dir as base for new window");
+            trace!(dir = %dir.display(), "Using dir as base");
         }
 
-        let window = SpawnWindow { name, dir, command };
-
-        Ok(window)
+        Ok(dir)
     }
 
     pub fn edit_config_file_in(
@@ -374,7 +402,7 @@ impl Config {
         let mut line_num = None;
 
         'editing: loop {
-            let mut cmd = Command::new(editor);
+            let mut cmd = Proc::new(editor);
             let _ = cmd.arg(path);
             if let Some(line_num) = line_num {
                 let _ = cmd.arg(format!("+{line_num}"));
@@ -560,7 +588,7 @@ impl EnvValue {
                 })
                 .collect::<Result<String, _>>(),
             Self::Command { program, args } => {
-                let mut cmd = Command::new(program);
+                let mut cmd = Proc::new(program);
                 args.into_iter().try_for_each(|arg| {
                     let arg = arg.resolve(get_env, add_env)?;
                     let _ = cmd.arg(arg);
@@ -854,13 +882,13 @@ impl<'de> Deserialize<'de> for Window {
                             if !mem::take(&mut free[2]) {
                                 return Err(A::Error::duplicate_field("command"));
                             }
-                            window.command = map.next_value()?;
+                            window.command.cmd = map.next_value()?;
                         }
                         "keep-alive" | "on-exit" | "remain" => {
                             if !mem::take(&mut free[3]) {
                                 return Err(A::Error::duplicate_field("on-exit"));
                             }
-                            window.on_exit = map.next_value()?;
+                            window.command.on_exit = map.next_value()?;
                         }
                         otherwise => return Err(A::Error::unknown_field(otherwise, FIELDS)),
                     }
@@ -928,7 +956,7 @@ impl<'de> Deserialize<'de> for OnExit {
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str(concat!(
-                    "a valid `on-exit` value: One of ",
+                    "a valid `on-exit` value: ",
                     r#"One of "destroy" or `true`, "deactivate", or "shell" or `false`"#
                 ))
             }
@@ -1255,8 +1283,10 @@ mod tests {
                 windows: vec![Window {
                     name: Some("test".to_owned()),
                     dir: Some("dir".into()),
-                    command: Some("echo world".to_owned()),
-                    on_exit: OnExit::Shell,
+                    command: Command {
+                        cmd: Some("echo world".to_owned()),
+                        on_exit: OnExit::Shell,
+                    }
                 }],
             }
         );
@@ -1337,7 +1367,10 @@ mod tests {
             config,
             Config {
                 windows: vec![Window {
-                    command: Some("echo world".to_owned()),
+                    command: Command {
+                        cmd: Some("echo world".to_owned()),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -1424,7 +1457,10 @@ mod tests {
             config,
             Config {
                 windows: vec![Window {
-                    on_exit: OnExit::Shell,
+                    command: Command {
+                        on_exit: OnExit::Shell,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -1460,7 +1496,10 @@ mod tests {
             config,
             Config {
                 windows: vec![Window {
-                    on_exit: expected,
+                    command: Command {
+                        on_exit: expected,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 }],
                 ..Default::default()
