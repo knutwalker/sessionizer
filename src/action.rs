@@ -1,13 +1,13 @@
 use std::{
     collections::HashMap,
     env::{self, VarError},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
 };
 
 use color_eyre::{Section as _, SectionExt as _};
 
-use crate::{Init, Result, WindowCommand, debug, eyre};
+use crate::{Init, Result, WindowCommand, config::EnvValue, debug, eyre, init::SpawnWindow};
 
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -53,95 +53,129 @@ fn build_command(
             root,
             on_init,
         } => {
-            let cmd = cmd
-                .args(["new-session", "-d", "-s", &name, "-c"])
-                .arg(&root)
-                .arg("-e")
-                .arg(format!("SESSION_ROOT={}", root.display()))
-                .arg("-e")
-                .arg(format!("SESSION_NAME={name}"));
-
-            let mut env = HashMap::with_capacity(on_init.env.len());
-
-            for (k, v) in on_init.env {
-                let v = v.resolve(
-                    &|k| match k {
-                        "SESSION_NAME" => Ok(name.clone()),
-                        "SESSION_ROOT" => Ok(root.display().to_string()),
-                        _ => env
-                            .get(k)
-                            .cloned()
-                            .ok_or(VarError::NotPresent)
-                            .or_else(|_| root_env(k)),
-                    },
-                    &env,
-                );
-
-                let v = match v {
-                    Ok(v) => v,
-                    Err(e) => {
-                        return Err(eyre!(e).section(k.header("Variable:")).note(
-                            #[allow(clippy::literal_string_with_formatting_args)]
-                            "You can provide a default value by using ${VAR_NAME:-default_value}",
-                        ));
-                    }
-                };
-                let _ = cmd.arg("-e").arg(format!("{k}={v}"));
-                let _ = env.insert(k, v);
-            }
-
-            drop(env);
-
-            let _ = cmd.arg(";");
-            let session_id = format!("={name}");
-
-            let _ = if inside_tmux {
-                cmd.args(["switch-client", "-t", &session_id])
-            } else {
-                cmd.args(["attach-session", "-t", &session_id])
-            };
-
-            if !on_init.run.is_empty() {
-                let session_pane = format!("{session_id}:");
-                for run in &on_init.run {
-                    let _ = cmd.args([";", "send-keys", "-t", &session_pane, run, "C-m"]);
-                }
-            }
-
-            for window in &on_init.windows {
-                let _ = cmd.args([";", "new-window", "-d", "-n", &window.name]);
-
-                if let Some(dir) = &window.dir {
-                    let _ = cmd.arg("-c").arg(dir);
-                }
-
-                if let Some(command) = &window.command {
-                    match command {
-                        WindowCommand::Command { command, remain } => {
-                            let _ = cmd.args(command);
-                            if let Some(remain) = *remain {
-                                let remain = if remain { "on" } else { "off" };
-                                let _ = cmd.args([
-                                    ";",
-                                    "set-option",
-                                    "-t",
-                                    &window.name,
-                                    "remain-on-exit",
-                                    remain,
-                                ]);
-                            }
-                        }
-                        WindowCommand::Run { run, .. } => {
-                            let target = format!("={name}:{}", window.name);
-                            let _ = cmd.args([";", "send-keys", "-t", &target, run, "C-m"]);
-                        }
-                    }
-                }
-            }
+            build_create_command(&name, &root, on_init, &mut cmd, inside_tmux, root_env)?;
         }
     };
 
     Ok(cmd)
+}
+
+fn build_create_command(
+    name: &str,
+    root: &Path,
+    on_init: Init,
+    cmd: &mut Command,
+    inside_tmux: bool,
+    root_env: impl Fn(&str) -> Result<String, VarError>,
+) -> Result<()> {
+    let cmd = cmd
+        .args(["new-session", "-d", "-s", name, "-c"])
+        .arg(root)
+        .arg("-e")
+        .arg(format!("SESSION_ROOT={}", root.display()))
+        .arg("-e")
+        .arg(format!("SESSION_NAME={name}"));
+
+    create_env(name, root, on_init.env, cmd, root_env)?;
+
+    let _ = cmd.arg(";");
+    let session_id = format!("={name}");
+
+    let _ = if inside_tmux {
+        cmd.args(["switch-client", "-t", &session_id])
+    } else {
+        cmd.args(["attach-session", "-t", &session_id])
+    };
+
+    create_run(&on_init.run, &session_id, cmd);
+    create_windows(name, &on_init.windows, cmd);
+
+    Ok(())
+}
+
+fn create_env(
+    name: &str,
+    root: &Path,
+    env_vars: Vec<(String, EnvValue)>,
+    cmd: &mut Command,
+    root_env: impl Fn(&str) -> Result<String, VarError>,
+) -> Result<()> {
+    let mut env = HashMap::with_capacity(env_vars.len());
+
+    for (k, v) in env_vars {
+        let v = v.resolve(
+            &|k| match k {
+                "SESSION_NAME" => Ok(name.to_owned()),
+                "SESSION_ROOT" => Ok(root.display().to_string()),
+                _ => env
+                    .get(k)
+                    .cloned()
+                    .ok_or(VarError::NotPresent)
+                    .or_else(|_| root_env(k)),
+            },
+            &env,
+        );
+
+        let v = match v {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(eyre!(e).section(k.header("Variable:")).note(
+                    #[allow(clippy::literal_string_with_formatting_args)]
+                    "You can provide a default value by using ${VAR_NAME:-default_value}",
+                ));
+            }
+        };
+        let _ = cmd.arg("-e").arg(format!("{k}={v}"));
+        let _ = env.insert(k, v);
+    }
+
+    Ok(())
+}
+
+fn create_run(run: &[String], session_id: &str, cmd: &mut Command) {
+    if !run.is_empty() {
+        let session_pane = format!("{session_id}:");
+        for run in run {
+            let _ = cmd.args([";", "send-keys", "-t", &session_pane, run, "C-m"]);
+        }
+    }
+}
+
+fn create_windows(session_name: &str, windows: &[SpawnWindow], cmd: &mut Command) {
+    for window in windows {
+        let _ = cmd.args([";", "new-window", "-d", "-n", &window.name]);
+
+        if let Some(dir) = &window.dir {
+            let _ = cmd.arg("-c").arg(dir);
+        }
+
+        if let Some(command) = &window.command {
+            let window_selector = format!("={session_name}:{}", window.name);
+            create_command(&window.name, &window_selector, command, cmd);
+        }
+    }
+}
+
+fn create_command(short_name: &str, full_name: &str, wc: &WindowCommand, cmd: &mut Command) {
+    match wc {
+        WindowCommand::Command { command, remain } => {
+            let _ = cmd.args(command);
+            if let Some(remain) = *remain {
+                let remain = if remain { "on" } else { "off" };
+                let _ = cmd.args([
+                    ";",
+                    "set-option",
+                    "-t",
+                    short_name,
+                    "remain-on-exit",
+                    remain,
+                ]);
+            }
+        }
+        WindowCommand::Run { run, .. } => {
+            let _ = cmd.args([";", "send-keys", "-t", full_name, run, "C-m"]);
+        }
+    }
 }
 
 #[cfg(test)]
