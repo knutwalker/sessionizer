@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0](https://github.com/knutwalker/sessionizer/compare/0.5.1...0.6.0) - 2025-03-30
+
+### Changes
+
+- Allow configuration of pane layout of initial window ([#53](https://github.com/knutwalker/sessionizer/pull/53))
+- Default to remain=shell ([#52](https://github.com/knutwalker/sessionizer/pull/52))
+- Add flag to skip running the init file ([#51](https://github.com/knutwalker/sessionizer/pull/51))
+- Create init file when running edit and it doesn't exist ([#50](https://github.com/knutwalker/sessionizer/pull/50))
+- Fmt
+- Move to 2024 edition ([#48](https://github.com/knutwalker/sessionizer/pull/48))
+
 ## [0.5.1](https://github.com/knutwalker/sessionizer/compare/0.5.0...0.5.1) - 2025-01-23
 
 ### Changes
