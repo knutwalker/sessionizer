@@ -17,9 +17,9 @@ use crate::{
     action::Action,
     args::Config,
     entry::{Entry, Project, TmuxSession},
-    init::{create_config_file, edit_config_file, validate_config_file, Init, WindowCommand},
+    init::{Init, WindowCommand, create_config_file, edit_config_file, validate_config_file},
     project::find_projects,
-    selection::{prompt_user, Selection},
+    selection::{Selection, prompt_user},
 };
 
 mod action;

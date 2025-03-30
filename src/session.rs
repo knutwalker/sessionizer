@@ -3,7 +3,7 @@ use std::{
     process::{Command, Output},
 };
 
-use crate::{debug, info, warn, Entry, Result, TmuxSession};
+use crate::{Entry, Result, TmuxSession, debug, info, warn};
 
 pub fn fetch_tmux_sessions(handle: impl FnMut(Entry) -> Result<()>) {
     let mut cmd = Command::new("tmux");

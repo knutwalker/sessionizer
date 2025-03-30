@@ -12,11 +12,11 @@ use std::{
 use ignore::{DirEntry, WalkBuilder, WalkState};
 use onlyerror::Error;
 use serde::{
-    de::{Error as _, MapAccess, Visitor},
     Deserialize, Deserializer,
+    de::{Error as _, MapAccess, Visitor},
 };
 
-use crate::{debug, info, trace, warn, Entry, Project, Result};
+use crate::{Entry, Project, Result, debug, info, trace, warn};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct SearchPath {

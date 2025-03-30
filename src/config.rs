@@ -11,26 +11,26 @@ use std::{
     process::Command,
 };
 
-use color_eyre::{eyre::Context as _, Section as _, SectionExt as _};
+use color_eyre::{Section as _, SectionExt as _, eyre::Context as _};
 use inquire::Select;
 use onlyerror::Error;
 use serde::{
-    de::{Error as _, MapAccess, Visitor},
     Deserialize, Deserializer,
+    de::{Error as _, MapAccess, Visitor},
 };
 use tempfile::NamedTempFile;
 use winnow::{
+    PResult, Parser,
     ascii::escaped_transform,
     combinator::{alt, cut_err, delimited, eof, opt, preceded, repeat, trace},
     error::{ErrMode, ParserError},
     token::{take_till, take_until, take_while},
-    PResult, Parser,
 };
 
 use crate::{
-    debug, eyre, info,
+    Result, debug, eyre, info,
     init::{Init, SpawnWindow, WindowCommand},
-    trace, Result,
+    trace,
 };
 
 #[allow(clippy::module_name_repetitions)]

@@ -6,12 +6,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use color_eyre::{eyre::Context as _, Section as _, SectionExt as _};
+use color_eyre::{Section as _, SectionExt as _, eyre::Context as _};
 use onlyerror::Error;
 
 use crate::{
+    Result,
     config::{Config, ConfigError, EnvValue},
-    eyre, trace, Result,
+    eyre, trace,
 };
 
 #[derive(Debug, Clone, Default)]

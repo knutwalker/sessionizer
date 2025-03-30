@@ -7,7 +7,7 @@ use std::{
 
 use color_eyre::{Section as _, SectionExt as _};
 
-use crate::{debug, eyre, Init, Result, WindowCommand};
+use crate::{Init, Result, WindowCommand, debug, eyre};
 
 #[derive(Debug, Clone)]
 pub enum Action {
