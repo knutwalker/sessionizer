@@ -669,9 +669,11 @@ impl EnvValue {
                         String::from_utf8_lossy(&output.stderr).into_owned(),
                     ));
                 }
-                String::from_utf8(output.stdout).map_err(|e| {
-                    EnvError::NotUtf8(String::from_utf8_lossy(&e.into_bytes()).into_owned())
-                })
+                std::str::from_utf8(&output.stdout)
+                    .map_err(|_| {
+                        EnvError::NotUtf8(String::from_utf8_lossy(&output.stdout).into_owned())
+                    })
+                    .map(|s| s.trim_end().to_owned())
             }
         }
     }
