@@ -186,9 +186,7 @@ fn create_root_layout(layout: &Layout, cmd: &mut Command) {
                     let _ = cmd.args(["-t", &pane_sel]);
 
                     if let SubLayout::Pane(ref pane) = sub.layout {
-                        if let Some(dir) = &pane.dir {
-                            let _ = cmd.arg("-c").arg(dir);
-                        }
+                        let _ = cmd.arg("-c").arg(&pane.dir);
                     }
                 }
 
