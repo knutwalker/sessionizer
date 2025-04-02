@@ -95,7 +95,7 @@ fn build_create_command(
     create_run(&on_init.run, &session_id, cmd);
     create_windows(name, &on_init.windows, cmd);
     if let Some(ref layout) = on_init.layout {
-        create_root_layout(layout, cmd);
+        create_root_layout(name, layout, cmd);
     }
 
     Ok(())
@@ -164,8 +164,8 @@ fn create_windows(session_name: &str, windows: &[SpawnWindow], cmd: &mut Command
     }
 }
 
-fn create_root_layout(layout: &Layout, cmd: &mut Command) {
-    fn recurse(layout: &Layout, index: &mut usize, cmd: &mut Command) {
+fn create_root_layout(session_name: &str, layout: &Layout, cmd: &mut Command) {
+    fn recurse(session_name: &str, layout: &Layout, index: &mut usize, cmd: &mut Command) {
         match &layout.layout {
             SubLayout::Split(split) => {
                 let idx = *index;
@@ -182,7 +182,7 @@ fn create_root_layout(layout: &Layout, cmd: &mut Command) {
                         let _ = cmd.args(["-l", size]);
                     }
 
-                    let pane_sel = format!(".{idx}");
+                    let pane_sel = format!("={session_name}:0.{idx}");
                     let _ = cmd.args(["-t", &pane_sel]);
 
                     if let SubLayout::Pane(ref pane) = sub.layout {
@@ -191,7 +191,7 @@ fn create_root_layout(layout: &Layout, cmd: &mut Command) {
                 }
 
                 for pane in &split.panes {
-                    recurse(pane, index, cmd);
+                    recurse(session_name, pane, index, cmd);
                 }
             }
             SubLayout::Pane(pane) => {
@@ -206,7 +206,7 @@ fn create_root_layout(layout: &Layout, cmd: &mut Command) {
     }
 
     let mut index = 0;
-    recurse(layout, &mut index, cmd);
+    recurse(session_name, layout, &mut index, cmd);
 }
 
 fn create_command(short_name: &str, full_name: &str, wc: &WindowCommand, cmd: &mut Command) {
