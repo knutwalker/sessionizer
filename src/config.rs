@@ -311,6 +311,7 @@ impl Config {
                     let idx = *index;
                     *index += 1;
                     let dir = Config::validate_dir(root_dir, idx, "Layout", dir)?;
+                    let dir = dir.unwrap_or_else(|| root_dir.to_owned());
                     let command = Config::validate_command(idx, "Layout", cmd)?;
                     let layout = init::PaneLayout { dir, command };
                     let layout = init::SubLayout::Pane(layout);

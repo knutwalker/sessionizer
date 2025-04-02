@@ -50,7 +50,7 @@ pub struct SplitLayout {
 
 #[derive(Debug, Clone)]
 pub struct PaneLayout {
-    pub dir: Option<PathBuf>,
+    pub dir: PathBuf,
     pub command: Option<WindowCommand>,
 }
 
