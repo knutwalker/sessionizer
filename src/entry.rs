@@ -13,15 +13,15 @@ pub enum Entry {
 impl Entry {
     pub fn path(&self) -> &Path {
         match self {
-            Self::Session(tmux) => &tmux.root,
-            Self::Project(project) => &project.root,
+            Self::Session(tmux) => tmux.root.as_path(),
+            Self::Project(project) => project.root.as_path(),
         }
     }
 
     pub fn search_content(&self) -> &str {
         match self {
-            Self::Session(tmux) => &tmux.name,
-            Self::Project(project) => &project.search_path,
+            Self::Session(tmux) => tmux.name.as_str(),
+            Self::Project(project) => project.search_path.as_str(),
         }
     }
 }
@@ -95,7 +95,7 @@ pub fn process_entries(entries: impl IntoIterator<Item = Entry>) -> Vec<Entry> {
         for session in &*sessions {
             if let Ok(pos) = projects.binary_search_by_key(&session.path(), |p| p.path()) {
                 // this is basically `entries.remove(index + pos)` but we can't do that
-                // because `entries` is allready borrowed mutably.
+                // because `entries` is already borrowed mutably.
                 // We rotate the slice to move the element to be removed to the last position
                 // and then shorten the slice by one.
                 projects[pos..].rotate_left(1);

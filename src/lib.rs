@@ -42,7 +42,7 @@ pub fn run(action: CliAction) -> Result<()> {
         CliAction::Config(Config::Init) => create_config_file()?,
         CliAction::Config(Config::Validate { insecure }) => validate_config_file(!insecure)?,
         CliAction::Config(Config::Edit { insecure }) => edit_config_file(!insecure)?,
-    };
+    }
 
     Ok(())
 }

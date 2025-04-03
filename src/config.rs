@@ -498,7 +498,7 @@ impl Config {
 
                     let mut esc_count = 0;
 
-                    'selection: loop {
+                    loop {
                         let sel = Select::new(
                             "What now?\n",
                             vec![Choices::EditAgain, Choices::ExitWithoutSaving],
@@ -525,7 +525,6 @@ impl Config {
                                 if esc_count >= 5 {
                                     return Ok(false);
                                 }
-                                continue 'selection;
                             }
                             Ok(Choices::ExitWithoutSaving) => return Ok(false),
                             Err(e) => return Err(eyre!(ConfigError::Editing)).context(e),

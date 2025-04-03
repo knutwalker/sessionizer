@@ -136,7 +136,7 @@ To customize the session using TOML, create a file that is:
 
    - located in the session root
    - called either **`.sessionizer.toml`** or **`sessionizer.toml`**
-         (If both are present, the dotted file takes precedence)
+     (If both are present, the dotted file takes precedence)
    - has permissions `0400`, `0600`, or `0700`
 
 The TOML file has the following structure (see `example/sessionizer.toml`):
@@ -176,7 +176,7 @@ The table for each `[[windows]]` section supports the following keys:
 
 key | usage | required | aliases
 ----|-------|----------|--------
-`name`    | The name of new window (usually displayed in the tmux status bar)             | No (but recommended, otherwise a name will be derived)              | 
+`name`    | The name of new window (usually displayed in the tmux status bar)             | No (but recommended, otherwise a name will be derived)              |
 `dir`     | The base directory of that new window. Paths are relative to the session root | No (defaults to session root)                                       | `path`, `workdir`, `wd`, `pwd`, `cwd`
 `command` | A command to run inside the new window.                                       | No                                                                  | `cmd`, `run`
 `on_exit` | What happens to the window when the command finishes (see below).             | No (default behavior depends on the remain-on-exit setting in tmux) | `keep-alive`, `remain`
@@ -215,7 +215,7 @@ To customize the session using script file, create a file that is:
 
    - located in the session root
    - called either **`.sessionizer.init`** or **`sessionizer.init`**
-         (If both are present, the dotted file takes precedence)
+     (If both are present, the dotted file takes precedence)
    - has permissions `0500`, or `0700`
 
 > [!NOTE]

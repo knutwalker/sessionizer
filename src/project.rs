@@ -88,7 +88,7 @@ pub fn find_projects(config: Option<PathBuf>, tx: &SyncSender<Entry>) -> Result<
             "If configured, $SESSIONIZER_PATH or $CDPATH are also used, in that order."
         ));
         return Ok(());
-    };
+    }
 
     find_projects_in(paths, tx);
 
@@ -339,7 +339,7 @@ fn parse_path(path: &Path, auto_star: bool) -> Result<SearchPath, ParsePathError
                 search_depth += 1;
             }
             (State::Star, Token::End) => {}
-        };
+        }
     }
 
     if path.is_relative() {
@@ -397,7 +397,7 @@ fn find_projects_in(paths: SessionizerConfig, tx: &SyncSender<Entry>) {
         if path.depth == (0..1) {
             if let Some(project) = accept_dir(std::mem::take(&mut path.path), 0, prio) {
                 let _ = tx.send(Entry::Project(project));
-            };
+            }
             return false;
         }
         if let Some((walker, max_depth)) = walker.as_mut() {
@@ -408,7 +408,7 @@ fn find_projects_in(paths: SessionizerConfig, tx: &SyncSender<Entry>) {
         } else {
             let w = WalkBuilder::new(&path.path);
             walker = Some((w, path.depth.end));
-        };
+        }
         true
     });
 
@@ -887,7 +887,7 @@ mod tests {
     }
 
     #[test]
-    fn skip_path_becuse_of_min_depth() {
+    fn skip_path_because_of_min_depth() {
         let result = process_dir(
             &[SearchPath::new("/home/user/dev/project-name", 2..3)],
             1,
@@ -899,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn skip_path_becuse_of_max_depth() {
+    fn skip_path_because_of_max_depth() {
         let result = process_dir(
             &[SearchPath::new("/home/user/dev/project-name", 1..2)],
             2,

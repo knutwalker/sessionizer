@@ -60,7 +60,7 @@ fn build_command(
         } => {
             build_create_command(&name, &root, on_init, &mut cmd, inside_tmux, root_env)?;
         }
-    };
+    }
 
     Ok(cmd)
 }
