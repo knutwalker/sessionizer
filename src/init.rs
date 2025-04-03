@@ -99,14 +99,14 @@ pub enum InitError {
 pub fn create_config_file() -> Result<(), InitError> {
     const INIT_FILE: &str = concat!(".", env!("CARGO_PKG_NAME"), ".toml");
 
-    let cwd = env::current_dir().map_err(InitError::InvalidCwd)?;
+    let cwd = config_dir()?;
     Config::write_empty_config_in(&cwd.join(INIT_FILE))?;
 
     Ok(())
 }
 
 pub fn edit_config_file(secure: bool) -> Result<()> {
-    let cwd = env::current_dir().map_err(InitError::InvalidCwd)?;
+    let cwd = config_dir()?;
 
     let init = loop {
         match InitFile::require_in(&cwd) {
@@ -135,7 +135,7 @@ pub fn edit_config_file(secure: bool) -> Result<()> {
 }
 
 pub fn validate_config_file(secure: bool) -> Result<()> {
-    let cwd = env::current_dir().map_err(InitError::InvalidCwd)?;
+    let cwd = config_dir()?;
     let init = InitFile::require_in(&cwd)?;
     let _init = init.validate(&cwd, secure)?;
     Ok(())
@@ -145,6 +145,13 @@ pub fn find_action(dir: &Path, secure: bool) -> Option<Result<Init>> {
     let init = InitFile::find_in(dir)?;
     let init = init.validate(dir, secure);
     Some(init)
+}
+
+fn config_dir() -> Result<PathBuf, InitError> {
+    env::var_os("SESSION_ROOT")
+        .map(PathBuf::from)
+        .map_or_else(env::current_dir, Ok)
+        .map_err(InitError::InvalidCwd)
 }
 
 #[derive(Debug, Clone)]
