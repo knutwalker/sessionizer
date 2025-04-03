@@ -114,11 +114,10 @@ pub fn edit_config_file(secure: bool) -> Result<()> {
             Err(e) => match e.downcast_ref::<InitError>() {
                 Some(InitError::NoConfigFile) => {
                     create_config_file()?;
-                    continue;
                 }
                 _ => return Err(e),
             },
-        };
+        }
     };
     Config::edit_config_file_in(&init.path, |path| {
         let tmp_file = InitFile {
@@ -222,7 +221,7 @@ impl InitFile {
                 };
 
                 return Err(err.note("Running with `--insecure` will disable this check"));
-            };
+            }
         }
 
         match self.kind {
