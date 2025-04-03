@@ -887,7 +887,7 @@ mod tests {
     }
 
     #[test]
-    fn skip_path_becuse_of_min_depth() {
+    fn skip_path_because_of_min_depth() {
         let result = process_dir(
             &[SearchPath::new("/home/user/dev/project-name", 2..3)],
             1,
@@ -899,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn skip_path_becuse_of_max_depth() {
+    fn skip_path_because_of_max_depth() {
         let result = process_dir(
             &[SearchPath::new("/home/user/dev/project-name", 1..2)],
             2,

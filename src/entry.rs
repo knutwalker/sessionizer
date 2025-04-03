@@ -95,7 +95,7 @@ pub fn process_entries(entries: impl IntoIterator<Item = Entry>) -> Vec<Entry> {
         for session in &*sessions {
             if let Ok(pos) = projects.binary_search_by_key(&session.path(), |p| p.path()) {
                 // this is basically `entries.remove(index + pos)` but we can't do that
-                // because `entries` is allready borrowed mutably.
+                // because `entries` is already borrowed mutably.
                 // We rotate the slice to move the element to be removed to the last position
                 // and then shorten the slice by one.
                 projects[pos..].rotate_left(1);
