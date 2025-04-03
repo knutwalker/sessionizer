@@ -13,15 +13,15 @@ pub enum Entry {
 impl Entry {
     pub fn path(&self) -> &Path {
         match self {
-            Self::Session(tmux) => &tmux.root,
-            Self::Project(project) => &project.root,
+            Self::Session(tmux) => tmux.root.as_path(),
+            Self::Project(project) => project.root.as_path(),
         }
     }
 
     pub fn search_content(&self) -> &str {
         match self {
-            Self::Session(tmux) => &tmux.name,
-            Self::Project(project) => &project.search_path,
+            Self::Session(tmux) => tmux.name.as_str(),
+            Self::Project(project) => project.search_path.as_str(),
         }
     }
 }
