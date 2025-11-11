@@ -1,5 +1,6 @@
 use std::{
     env::current_exe,
+    ffi::OsString,
     os::unix::process::CommandExt as _,
     process::Command,
     sync::mpsc::{self, SyncSender},
@@ -37,7 +38,7 @@ mod session;
 /// Since this is the main entry, all possible errors are returned as [`color_eyre::Result`].
 pub fn run(action: CliAction) -> Result<()> {
     match action {
-        CliAction::Shell => run_shell()?,
+        CliAction::Shell(search_args) => run_shell(search_args)?,
         CliAction::Search(args) => run_search(args)?,
         CliAction::Config(Config::Init) => create_config_file()?,
         CliAction::Config(Config::Validate { insecure }) => validate_config_file(!insecure)?,
@@ -47,12 +48,18 @@ pub fn run(action: CliAction) -> Result<()> {
     Ok(())
 }
 
-fn run_shell() -> Result<()> {
+fn run_shell(search_args: Vec<OsString>) -> Result<()> {
     let bin = current_exe()?;
+    let mut search_args = Some(search_args);
     loop {
-        let mut child = Command::new(bin.as_path())
-            .arg("--empty-exit-code=42")
-            .spawn()?;
+        let mut cmd = Command::new(bin.as_path());
+        _ = cmd.arg("--empty-exit-code=42");
+
+        if let Some(search_args) = search_args.take() {
+            _ = cmd.args(search_args);
+        }
+
+        let mut child = cmd.spawn()?;
         let exit = child.wait()?;
         if !exit.success() {
             let exit = exit.code().unwrap_or(126);
