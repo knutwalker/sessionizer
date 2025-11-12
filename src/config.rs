@@ -664,7 +664,7 @@ impl EnvValue {
 
                 if !output.status.success() {
                     return Err(EnvError::Command(
-                        io::Error::new(io::ErrorKind::Other, "Command failed"),
+                        io::Error::other("Command failed"),
                         String::from_utf8_lossy(&output.stderr).into_owned(),
                     ));
                 }

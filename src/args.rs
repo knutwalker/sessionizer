@@ -1,4 +1,4 @@
-use std::{env, fmt, io, iter, path::PathBuf};
+use std::{collections::HashMap, env, ffi::OsString, fmt, io, iter, path::PathBuf};
 
 use clap::{Arg, ArgAction, ArgGroup, ArgMatches, Command, value_parser};
 
@@ -14,35 +14,20 @@ use crate::{
 pub enum Action {
     Search(Search),
     Config(Config),
-    Shell,
+    Shell(Vec<OsString>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Search {
     pub dry_run: bool,
-    pub load_file: bool,
+    pub skip_init: bool,
     pub insecure: bool,
     pub use_color: bool,
     pub empty_exit_code: i32,
     pub projects_config: Option<PathBuf>,
     pub scope: Scope,
     pub query: Option<String>,
-}
-
-impl Default for Search {
-    fn default() -> Self {
-        Self {
-            dry_run: false,
-            load_file: true,
-            insecure: false,
-            use_color: false,
-            empty_exit_code: 0,
-            projects_config: None,
-            scope: Scope::default(),
-            query: None,
-        }
-    }
 }
 
 impl Search {
@@ -89,12 +74,12 @@ impl Action {
     /// Panics if there is an error in the CLI parsing.
     #[must_use]
     pub fn cli() -> Self {
-        let app = Self::command().color(app_color());
-        let mut matches = app.get_matches();
+        let mut app = Self::command().color(app_color());
+        let mut matches = app.get_matches_mut();
 
         let color = Self::init_color(&mut matches).ansi_color();
         Self::init_tracing(&mut matches, color);
-        let args = Self::from_matches(&mut matches, color);
+        let args = Self::from_matches(&app, matches, color);
 
         debug!(?color, ?args);
 
@@ -186,18 +171,18 @@ impl Action {
                 .value_parser(value_parser!(bool))
                 .action(ArgAction::SetTrue)
                 .required(false),
-            Arg::new("load_file")
+            Arg::new("skip_init")
                 .long("skip-init")
                 .short('S')
                 .help("Skip running any initialization file")
                 .long_help(concat!(
-                    "This is usefile when there isan issue with the ",
+                    "This is useful when there is an issue with the ",
                     "configuration file, and you still want to attach ",
                     "to a session, pretending the innitialization file ",
                     "does not exist.",
                 ))
                 .value_parser(value_parser!(bool))
-                .action(ArgAction::SetFalse)
+                .action(ArgAction::SetTrue)
                 .required(false),
             Arg::new("insecure")
                 .long("insecure")
@@ -275,7 +260,7 @@ impl Action {
             .long("shell")
             .short('s')
             .help("Continuously invoke sessionizer")
-            .conflicts_with_all(["search", "config"])
+            .conflicts_with("config")
             .action(ArgAction::SetTrue)
             .required(false)]
     }
@@ -362,18 +347,14 @@ impl Action {
             .expect("failed to install color_eyre");
     }
 
-    fn from_matches(matches: &mut ArgMatches, use_color: bool) -> Self {
+    fn from_matches(command: &Command, mut matches: ArgMatches, use_color: bool) -> Self {
         let shell = matches.get_flag("shell");
         if shell {
-            return Self::Shell;
+            let raw_args = Self::matches_as_raw_args(command, matches);
+            return Self::Shell(raw_args);
         }
 
-        let load_file = matches.remove_one::<bool>("load_file").expect("flag");
         let insecure = matches.remove_one::<bool>("insecure").expect("flag");
-        let dry_run = matches.remove_one::<bool>("dry_run").expect("flag");
-        let empty_exit_code = matches
-            .remove_one::<i32>("empty_exit_code")
-            .expect("has default value");
         let config = matches.remove_one::<String>("config");
         if let Some(config) = config {
             let config = match config.as_str() {
@@ -385,13 +366,20 @@ impl Action {
             return Self::Config(config);
         }
 
+        let dry_run = matches.remove_one::<bool>("dry_run").expect("flag");
+        let skip_init = matches.remove_one::<bool>("skip_init").expect("flag");
+        let empty_exit_code = matches
+            .remove_one::<i32>("empty_exit_code")
+            .expect("has default value");
         let projects_config = matches.remove_one::<PathBuf>("projects_config");
-        let tmux_only = matches.remove_one::<bool>("tmux_only").expect("flag");
-        let projects_only = matches.remove_one::<bool>("projects_only").expect("flag");
-        let scope = match (tmux_only, projects_only) {
-            (true, _) => Scope::TmuxOnly,
-            (_, true) => Scope::ProjectsOnly,
-            _ => Scope::Both,
+        let scope = {
+            let tmux_only = matches.remove_one::<bool>("tmux_only").expect("flag");
+            let projects_only = matches.remove_one::<bool>("projects_only").expect("flag");
+            match (tmux_only, projects_only) {
+                (true, _) => Scope::TmuxOnly,
+                (_, true) => Scope::ProjectsOnly,
+                _ => Scope::Both,
+            }
         };
 
         let query = matches
@@ -411,7 +399,7 @@ impl Action {
 
         Self::Search(Search {
             dry_run,
-            load_file,
+            skip_init,
             insecure,
             use_color,
             empty_exit_code,
@@ -421,6 +409,72 @@ impl Action {
         })
     }
 
+    fn matches_as_raw_args(command: &Command, mut matches: ArgMatches) -> Vec<OsString> {
+        enum Flag<'a> {
+            Short(char),
+            Long(&'a str),
+        }
+
+        impl Flag<'_> {
+            fn to_os_string(&self) -> OsString {
+                let mut target = OsString::new();
+                match self {
+                    Flag::Short(s) => {
+                        target.push("-");
+                        let mut buf = [0; 4];
+                        target.push(s.encode_utf8(&mut buf));
+                    }
+                    Flag::Long(l) => {
+                        target.push("--");
+                        target.push(l);
+                    }
+                }
+                target
+            }
+        }
+
+        let flags = command
+            .get_arguments()
+            .filter_map(|a| {
+                a.get_long()
+                    .map(Flag::Long)
+                    .or_else(|| a.get_short().map(Flag::Short))
+                    .map(|flag| (a.get_id().as_str(), flag))
+            })
+            .collect::<HashMap<_, _>>();
+
+        let mut raw_args = Vec::<OsString>::new();
+
+        for flag in [
+            "dry_run",
+            "skip_init",
+            "tmux_only",
+            "projects_only",
+            "insecure",
+        ] {
+            let is_set = matches.remove_one::<bool>(flag).expect("flag");
+            if is_set {
+                raw_args.push(flags[flag].to_os_string());
+            }
+        }
+
+        let projects_config = matches.remove_one::<PathBuf>("projects_config");
+        if let Some(projects_config) = projects_config {
+            let mut arg = flags["projects_config"].to_os_string();
+            arg.push("=");
+            arg.push(projects_config);
+            raw_args.push(arg);
+        }
+
+        if let Some(query) = matches.remove_many::<String>("query") {
+            for q in query {
+                raw_args.push(q.into());
+            }
+        }
+
+        raw_args
+    }
+
     #[cfg(test)]
     fn from_flags<const N: usize>(args: [&str; N]) -> Self {
         Self::try_from_flags(args).unwrap()
@@ -428,9 +482,12 @@ impl Action {
 
     #[cfg(test)]
     fn try_from_flags<const N: usize>(args: [&str; N]) -> Result<Self, clap::Error> {
-        Self::get_matches(args)
-            .map(|mut m| Self::from_matches(&mut m, false))
-            .map_err(|e| e.format(&mut Self::command()))
+        let args = iter::once(env!("CARGO_PKG_NAME")).chain(args);
+        let mut command = Self::command();
+        command
+            .try_get_matches_from_mut(args)
+            .map(|m| Self::from_matches(&command, m, false))
+            .map_err(|e| e.format(&mut command))
     }
 
     #[cfg(test)]
@@ -878,12 +935,12 @@ mod tests {
 
     #[test]
     fn skip_init_flag_for_search() {
-        assert_search!(["--skip-init"], Search { load_file: false });
+        assert_search!(["--skip-init"], Search { skip_init: true });
     }
 
     #[test]
     fn skip_init_short_flag_for_search() {
-        assert_search!(["-S"], Search { load_file: false });
+        assert_search!(["-S"], Search { skip_init: true });
     }
 
     #[test]
@@ -966,7 +1023,7 @@ mod tests {
             ["-n", "-S", "--insecure", "--tmux", "foo", "bar"],
             Search {
                 dry_run: true,
-                load_file: false,
+                skip_init: true,
                 insecure: true,
                 scope: Scope::TmuxOnly,
                 query: Some("foo bar".into())
