@@ -17,32 +17,17 @@ pub enum Action {
     Shell,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Search {
     pub dry_run: bool,
-    pub load_file: bool,
+    pub skip_init: bool,
     pub insecure: bool,
     pub use_color: bool,
     pub empty_exit_code: i32,
     pub projects_config: Option<PathBuf>,
     pub scope: Scope,
     pub query: Option<String>,
-}
-
-impl Default for Search {
-    fn default() -> Self {
-        Self {
-            dry_run: false,
-            load_file: true,
-            insecure: false,
-            use_color: false,
-            empty_exit_code: 0,
-            projects_config: None,
-            scope: Scope::default(),
-            query: None,
-        }
-    }
 }
 
 impl Search {
@@ -186,18 +171,18 @@ impl Action {
                 .value_parser(value_parser!(bool))
                 .action(ArgAction::SetTrue)
                 .required(false),
-            Arg::new("load_file")
+            Arg::new("skip_init")
                 .long("skip-init")
                 .short('S')
                 .help("Skip running any initialization file")
                 .long_help(concat!(
-                    "This is usefile when there isan issue with the ",
+                    "This is useful when there is an issue with the ",
                     "configuration file, and you still want to attach ",
                     "to a session, pretending the innitialization file ",
                     "does not exist.",
                 ))
                 .value_parser(value_parser!(bool))
-                .action(ArgAction::SetFalse)
+                .action(ArgAction::SetTrue)
                 .required(false),
             Arg::new("insecure")
                 .long("insecure")
@@ -368,7 +353,7 @@ impl Action {
             return Self::Shell;
         }
 
-        let load_file = matches.remove_one::<bool>("load_file").expect("flag");
+        let skip_init = matches.remove_one::<bool>("skip_init").expect("flag");
         let insecure = matches.remove_one::<bool>("insecure").expect("flag");
         let dry_run = matches.remove_one::<bool>("dry_run").expect("flag");
         let empty_exit_code = matches
@@ -411,7 +396,7 @@ impl Action {
 
         Self::Search(Search {
             dry_run,
-            load_file,
+            skip_init,
             insecure,
             use_color,
             empty_exit_code,
@@ -878,12 +863,12 @@ mod tests {
 
     #[test]
     fn skip_init_flag_for_search() {
-        assert_search!(["--skip-init"], Search { load_file: false });
+        assert_search!(["--skip-init"], Search { skip_init: true });
     }
 
     #[test]
     fn skip_init_short_flag_for_search() {
-        assert_search!(["-S"], Search { load_file: false });
+        assert_search!(["-S"], Search { skip_init: true });
     }
 
     #[test]
@@ -966,7 +951,7 @@ mod tests {
             ["-n", "-S", "--insecure", "--tmux", "foo", "bar"],
             Search {
                 dry_run: true,
-                load_file: false,
+                skip_init: true,
                 insecure: true,
                 scope: Scope::TmuxOnly,
                 query: Some("foo bar".into())

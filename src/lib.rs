@@ -67,7 +67,7 @@ fn run_shell() -> Result<()> {
 fn run_search(
     Search {
         dry_run,
-        load_file,
+        skip_init,
         insecure,
         use_color,
         empty_exit_code,
@@ -101,7 +101,7 @@ fn run_search(
     let command = prompt_user(selection).and_then(|e| {
         e.map(|e| {
             debug!(entry =? e, "selected");
-            apply_entry(e, load_file, !insecure)
+            apply_entry(e, !skip_init, !insecure)
         })
         .transpose()
     })?;
